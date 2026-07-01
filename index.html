@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ROD Database — Echoes of Aincrad Reverse-Engineering Toolkit</title>
+<link rel="stylesheet" href="app/css/theme.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div id="app">
+  <div class="grid-backdrop" id="gridBackdrop">
+    <div class="bg-rings">
+      <svg viewBox="0 0 720 720" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="360" cy="360" r="340" fill="none" stroke="rgba(135,200,210,0.12)" stroke-width="1"/>
+        <circle cx="360" cy="360" r="220" fill="none" stroke="rgba(135,200,210,0.10)" stroke-width="1"/>
+        <circle cx="360" cy="360" r="120" fill="none" stroke="rgba(135,200,210,0.10)" stroke-width="1"/>
+        <g class="bg-ring-outer" stroke="rgba(135,200,210,0.4)" stroke-width="2" fill="none">
+          <path d="M 360 20 A 340 340 0 0 1 660 200" />
+          <path d="M 100 540 A 340 340 0 0 1 200 660" />
+        </g>
+        <g class="bg-ring-mid" stroke="rgba(135,200,210,0.45)" stroke-width="2" fill="none">
+          <path d="M 140 360 A 220 220 0 0 1 240 175" />
+          <path d="M 480 545 A 220 220 0 0 1 580 360" />
+        </g>
+        <g class="bg-ring-inner" stroke="rgba(135,200,210,0.5)" stroke-width="2" fill="none">
+          <path d="M 360 240 A 120 120 0 0 1 467 300" />
+          <path d="M 253 420 A 120 120 0 0 1 360 480" />
+        </g>
+      </svg>
+    </div>
+    <div class="bg-edge-lines" id="bgEdgeLines"></div>
+    <div class="bg-monitor-layer" id="bgMonitorLayer"></div>
+  </div>
+
+  <div class="loading-screen" id="loadingScreen">
+    <div class="loading-ring"></div>
+    <div class="loading-text">Loading ROD Database&hellip;</div>
+  </div>
+
+  <div class="shell" id="shell" style="display:none;">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span>Database</span>
+        <button class="anim-toggle-btn" id="animToggleBtn" title="Cycle equipment icon scan animation: Default / Randomized / Off">
+          <span class="anim-toggle-icon">◐</span>
+          <span id="animToggleLabel">Default</span>
+        </button>
+      </div>
+      <div class="lang-selector-row">
+        <span class="lang-selector-icon">🌐</span>
+        <select id="langSelector" class="lang-selector-select"></select>
+      </div>
+      <ul class="nav-list" id="navList">
+        <li class="nav-item" data-route="world" title="World (Lore built; Areas and other sections coming later)"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_World.png" alt="" /></span><span class="nav-label">World</span></li>
+        <li class="nav-item" data-route="items" title="Items"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Item.png" alt="" /></span><span class="nav-label">Items</span></li>
+        <li class="nav-item active" data-route="equipment" title="Equipment"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Equip.png" alt="" /></span><span class="nav-label">Equipment</span></li>
+        <li class="nav-item" data-route="monsters" title="Monsters"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Enemy.png" alt="" /></span><span class="nav-label">Monsters</span></li>
+        <li class="nav-item" data-route="characters" title="Characters"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIconCharacter.png" alt="" /></span><span class="nav-label">Characters</span></li>
+      </ul>
+      <ul class="nav-list" id="toolList" style="margin-top: 6px;">
+        <li class="nav-item" data-route="inspector" title="JSON Inspector"><span class="nav-icon">{ }</span><span class="nav-label">JSON Inspector</span></li>
+        <li class="nav-item" data-route="dt-inspector" title="DT Inspector"><span class="nav-icon">▤</span><span class="nav-label">DT Inspector</span></li>
+        <li class="nav-item" data-route="bp-inspector" title="BP Inspector"><span class="nav-icon">⌘</span><span class="nav-label">BP Inspector</span></li>
+        <li class="nav-item" data-route="asset-inspector" title="Asset Inspector"><span class="nav-icon">◈</span><span class="nav-label">Asset Inspector</span></li>
+        <li class="nav-item" data-route="wwise-audio" title="Wwise Audio"><span class="nav-icon">♪</span><span class="nav-label">Wwise Audio</span></li>
+        <li class="nav-item" data-route="coverage" title="Data Coverage"><span class="nav-icon">✓</span><span class="nav-label">Data Coverage</span></li>
+      </ul>
+      <ul class="nav-list" id="buildToolList" style="margin-top: 6px;">
+        <li class="nav-item" data-route="build-dashboard" title="Build Dashboard"><span class="nav-icon">⚙</span><span class="nav-label">Build Dashboard</span></li>
+      </ul>
+      <div class="sidebar-footer" id="sidebarFooter">
+        <span class="sidebar-footer-text">
+          ROD Database Toolkit<br/>
+          Content/ROD/ export v1
+        </span>
+      </div>
+      <button class="sidebar-collapse-btn" id="sidebarCollapseBtn" title="Collapse sidebar to icons only" aria-label="Collapse sidebar to icons only" aria-expanded="true">
+        <span class="sidebar-collapse-icon">«</span>
+      </button>
+    </aside>
+
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <!-- Main content -->
+    <main class="main">
+      <div class="topbar">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu" title="Open menu">☰</button>
+        <span class="crumb" id="crumb">Database / Equipment / Weapons</span>
+      </div>
+      <div class="content-scroll" id="contentScroll">
+        <!-- view content injected here -->
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="app/js/data-loader.js"></script>
+<script src="app/js/disclaimer-modal.js"></script>
+<script src="app/js/budget-tracker-modal.js"></script>
+<script src="app/js/animation-settings.js"></script>
+<script src="app/js/background-fx.js"></script>
+<script src="app/js/loading-skeleton.js"></script>
+<script src="app/js/acv-engine.js"></script>
+<script src="app/js/views/weapons-browser.js"></script>
+<script src="app/js/views/equipment-browser.js"></script>
+<script src="app/js/views/sword-skills-browser.js"></script>
+<script src="app/js/views/monsters-browser.js"></script>
+<script src="app/js/views/items-browser.js"></script>
+<script src="app/js/views/lore-browser.js"></script>
+<script src="app/js/views/towns-browser.js"></script>
+<script src="app/js/views/quests-browser.js"></script>
+<script src="app/js/views/characters-browser.js"></script>
+<script src="app/js/views/json-inspector.js"></script>
+<script src="app/js/views/dt-inspector.js"></script>
+<script src="app/js/views/bp-inspector.js"></script>
+<script src="app/js/views/asset-inspector.js"></script>
+<script src="app/js/views/coverage-report.js"></script>
+<script src="app/js/views/build-dashboard.js"></script>
+<script src="app/js/views/wwise-audio-browser.js"></script>
+<script src="app/js/main.js"></script>
+</body>
+</html>

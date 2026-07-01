@@ -1,0 +1,1949 @@
+/* ============================================================
+   ROD Database — SAO-style holographic UI theme
+   Tokens derived directly from in-game screenshots.
+   ============================================================ */
+
+:root {
+  /* -- Database / menu surface (cyan holographic) -- */
+  --db-bg-deep:      #0F2429;
+  --db-bg-panel:     #1D4555;
+  --db-bg-panel-2:   #16323D;
+  --db-row-bg:       rgba(105, 127, 134, 0.35);
+  --db-row-bg-hover: rgba(105, 127, 134, 0.55);
+  --db-cyan:         #40CFD8;
+  --db-cyan-bright:  #5BE8F0;
+  --db-cream:        #EFF1E9;
+  --db-grid-line:    rgba(135, 200, 210, 0.12);
+
+  /* -- In-game HUD / equip overlay (warm dark) -- */
+  --hud-panel-bg:    rgba(40, 36, 31, 0.90);
+  --hud-panel-bg-2:  rgba(28, 25, 22, 0.94);
+  --hud-border:      rgba(255, 249, 237, 0.18);
+  --hud-text:        #FFF9ED;
+  --hud-text-dim:    #C9C3B6;
+  --hud-hp:          #5EEB6D;
+  --hud-stamina:     #FFB200;
+  --hud-sp:          #00E0F0;
+  --hud-atk-label:   #FFD400;
+  --hud-acv:         #E0314F;
+  --hud-mod:         #A97FE4;
+
+  /* -- Rank colors (D/C/B/A/S) -- */
+  --rank-d:          #5EEB6D;
+  --rank-c:          #5BC4E0;
+  --rank-b:          #E0455F;
+  --rank-a:          #9B6FE0;
+  --rank-s:          #F2C94C;
+
+  /* -- Type scale -- */
+  --font-display: 'Rajdhani', 'Orbitron', sans-serif;
+  --font-body: 'Inter', 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+
+  --radius-sm: 2px;
+  --radius-md: 4px;
+
+  /* Single source of truth for the equipment-icon scan-bar's height
+     (as a % of its .scan-frame container). Read by .scan-bar's own
+     `height` rule below AND by animation-settings.js's
+     updateScanBarKeyframe() (via getComputedStyle), so the bar's
+     resting/swept-away keyframe positions (top:100% / top:-<this>%)
+     can never silently drift out of sync with its actual height by
+     having the number hardcoded in two separate places. */
+  --scan-bar-height-pct: 35;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--db-bg-deep);
+  color: var(--hud-text);
+  font-family: var(--font-body);
+  overflow: hidden;
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  background:
+    radial-gradient(circle at 70% 50%, rgba(64,207,216,0.06), transparent 60%),
+    linear-gradient(135deg, var(--db-bg-deep) 0%, #102B33 55%, var(--db-bg-deep) 100%);
+}
+
+/* ============================================================
+   Animated database backdrop -- three independent moving layers,
+   matching the in-game Database menu background:
+     1. Concentric ring arcs that slowly rotate (alternating
+        clockwise/counter-clockwise per ring)
+     2. Thin horizontal lines along the top/bottom edges that
+        slide left<->right, looping off-screen
+     3. Faint rectangle outlines that "power on" -- expand from
+        a point to a line to a full rectangle, hold, then reverse
+        and disappear -- at random positions and random intervals
+   ============================================================ */
+
+.grid-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0.6;
+  background-image:
+    linear-gradient(var(--db-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--db-grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.bg-rings {
+  position: absolute;
+  top: 50%;
+  right: 8%;
+  width: 720px;
+  height: 720px;
+  transform: translateY(-50%);
+}
+.bg-rings svg { width: 100%; height: 100%; }
+.bg-ring-outer { animation: ringRotateCW 90s linear infinite; transform-origin: center; }
+.bg-ring-mid   { animation: ringRotateCCW 65s linear infinite; transform-origin: center; }
+.bg-ring-inner { animation: ringRotateCW 40s linear infinite; transform-origin: center; }
+
+@keyframes ringRotateCW  { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes ringRotateCCW { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
+
+.bg-edge-lines {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.bg-monitor-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.bg-edge-line {
+  position: absolute;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(135,200,210,0.55), transparent);
+  width: 38%;
+}
+.bg-edge-line.slide-right { animation: slideRight linear infinite; }
+.bg-edge-line.slide-left  { animation: slideLeft linear infinite; }
+
+@keyframes slideRight {
+  from { transform: translateX(-45vw); }
+  to   { transform: translateX(135vw); }
+}
+@keyframes slideLeft {
+  from { transform: translateX(135vw); }
+  to   { transform: translateX(-45vw); }
+}
+
+.bg-monitor-box {
+  position: absolute;
+  border: 1px solid rgba(135,200,210,0.35);
+  opacity: 0;
+  width: var(--target-w, 100px);
+  height: var(--target-h, 60px);
+}
+.bg-monitor-box.opening {
+  animation: monitorOpen 1.6s cubic-bezier(0.4,0,0.2,1) forwards;
+}
+.bg-monitor-box.closing {
+  animation: monitorClose 1.3s cubic-bezier(0.4,0,0.2,1) forwards;
+}
+@keyframes monitorOpen {
+  0%   { opacity: 0; width: 0; height: 1px; }
+  20%  { opacity: 1; width: 0; height: 1px; }
+  55%  { opacity: 1; width: var(--target-w); height: 1px; }
+  100% { opacity: 1; width: var(--target-w); height: var(--target-h); }
+}
+@keyframes monitorClose {
+  0%   { opacity: 1; width: var(--target-w); height: var(--target-h); }
+  45%  { opacity: 1; width: var(--target-w); height: 1px; }
+  80%  { opacity: 1; width: 0; height: 1px; }
+  100% { opacity: 0; width: 0; height: 1px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-ring-outer, .bg-ring-mid, .bg-ring-inner,
+  .bg-edge-line, .bg-monitor-box { animation: none !important; }
+}
+
+/* ============================================================
+   Layout shell
+   ============================================================ */
+
+.shell {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 300px;
+  flex-shrink: 0;
+  padding: 28px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  /* Defense-in-depth: nothing in the sidebar should ever need to
+     overflow it horizontally (no tooltips/popups currently rely on
+     escaping these bounds), so clip rather than let a future long
+     string silently push the layout wide again the way the language
+     dropdown did. */
+  overflow-x: hidden;
+  /* UI/UX fix (Option A): the sidebar now has 12+ nav items across
+     three groups (Database categories, Tools, Build Dashboard) -- on
+     shorter viewports this can exceed 100vh, and since .shell sets a
+     fixed height:100vh with no scroll handling of its own, the
+     BROWSER's own outer scrollbar was appearing (confirmed: .shell
+     had no overflow rule at all). Scrolling the sidebar internally
+     instead keeps the header/footer/main content area visually stable
+     and matches the custom scrollbar treatment .content-scroll
+     already uses, rather than a generic browser scrollbar appearing
+     in a place nothing else in this app does.
+  */
+  overflow-y: auto;
+  transition: width 0.22s ease, padding 0.22s ease;
+  position: relative;
+}
+
+.sidebar::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb {
+  background: rgba(64,207,216,0.35);
+  border-radius: 4px;
+}
+
+/* ============================================================
+   Collapsible sidebar (icons-only mode)
+   ============================================================
+   Toggled by adding/removing .collapsed on .sidebar (see main.js's
+   bindSidebarCollapse()). The original full-width design and all its
+   markup stay completely intact underneath -- this only hides text
+   nodes and shrinks the container; nothing is removed or rebuilt, so
+   un-collapsing instantly restores the exact prior state with no
+   re-render needed. Persisted in localStorage so the choice survives
+   a refresh, primarily aimed at narrow/mobile viewports where the
+   300px default width eats a lot of usable space.
+*/
+.sidebar.collapsed {
+  width: 72px;
+  padding: 28px 12px;
+}
+.sidebar.collapsed .sidebar-header { justify-content: center; padding: 12px 0; }
+.sidebar.collapsed .sidebar-header > span,
+.sidebar.collapsed .anim-toggle-btn,
+.sidebar.collapsed .lang-selector-row,
+.sidebar.collapsed .sidebar-footer-text {
+  display: none;
+}
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  padding: 12px 0;
+  gap: 0;
+}
+.sidebar.collapsed .nav-item .nav-label {
+  display: none;
+}
+.sidebar.collapsed .sidebar-footer {
+  justify-content: center;
+}
+
+.sidebar-collapse-btn {
+  /* Sits fully INSIDE the sidebar's right edge (not straddling/
+     overlapping it) -- .sidebar has overflow-x:hidden (see the
+     language-dropdown overflow fix above), which would otherwise clip
+     half of this button if it extended past the sidebar's own bounds
+     the way a straddling "edge handle" normally would. */
+  position: absolute;
+  top: 24px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--db-cyan);
+  border: 2px solid var(--db-bg-deep);
+  color: #0B2B30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  z-index: 2;
+  box-shadow: 0 0 10px rgba(64,207,216,0.5);
+  transition: background 0.15s ease, transform 0.22s ease, right 0.22s ease;
+}
+.sidebar-collapse-btn:hover { background: var(--db-cyan-bright); }
+.sidebar.collapsed .sidebar-collapse-btn {
+  /* In collapsed (72px) mode there's no room for the button to sit at
+     a fixed 10px-from-the-right offset alongside icon-only nav items
+     without looking cramped against them -- centering it instead. */
+  right: 50%;
+  transform: translateX(50%);
+}
+.sidebar.collapsed .sidebar-collapse-btn .sidebar-collapse-icon {
+  /* The « glyph itself is mirrored via transform rather than swapped
+     for » in markup/JS, so there's one less piece of state to keep in
+     sync -- the button always means "the chevron points the direction
+     the sidebar will move when you click it." */
+  display: inline-block;
+  transform: scaleX(-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .sidebar-collapse-btn { transition: none !important; }
+}
+
+.sidebar-header {
+  background: var(--db-cream);
+  color: #1D4555;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.04em;
+  padding: 12px 18px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+.sidebar-header::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--db-cyan);
+}
+
+.anim-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(29,69,85,0.12);
+  border: 1px solid rgba(29,69,85,0.25);
+  border-radius: 12px;
+  color: #1D4555;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 10px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+.anim-toggle-btn:hover { background: rgba(29,69,85,0.22); }
+.anim-toggle-btn[data-state="randomized"] { border-color: rgba(64,207,216,0.6); }
+.anim-toggle-btn[data-state="off"] { opacity: 0.6; }
+.anim-toggle-icon { font-size: 12px; }
+
+.lang-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: rgba(0,0,0,0.18);
+  /* Without this, a flex child's content (here: a <select>'s widest
+     <option> text, e.g. "Español (Latinoamérica)" combined with a
+     verified-count suffix) can force the row wider than the sidebar
+     itself -- a <select>'s intrinsic min-width defaults to its
+     content width, and flex items don't shrink below their content's
+     intrinsic size unless told to explicitly (see min-width:0 below). */
+  max-width: 100%;
+  overflow: hidden;
+}
+.lang-selector-icon { font-size: 13px; opacity: 0.8; flex-shrink: 0; }
+.lang-selector-select {
+  flex: 1;
+  /* THE FIX: overrides the browser default of min-width:auto (which
+     for a <select> means "at least as wide as my longest <option>
+     text"), letting it actually shrink to fit the 1fr space flex
+     gave it instead of forcing the whole sidebar wider. */
+  min-width: 0;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius-sm);
+  color: var(--hud-text);
+  font-family: var(--font-body);
+  font-size: 12px;
+  padding: 5px 8px;
+  /* The <select> itself (the closed/collapsed state) also needs this --
+     min-width:0 above stops IT from forcing the row wider, but the
+     selected option's text still needs to truncate with an ellipsis
+     rather than simply clip, so it stays readable as "Español (Lati…"
+     rather than abruptly cut off mid-character. The dropdown's OPEN
+     list of options is unaffected by this -- browsers always size that
+     popup independently of the closed control's width. */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.lang-selector-select:focus { outline: none; border-color: var(--db-cyan); }
+.lang-selector-select option { background: var(--hud-panel-bg-2); color: var(--hud-text); }
+.lang-selector-select option:disabled { color: var(--hud-text-dim); }
+
+@keyframes animToggleFlash {
+  0%   { background: rgba(64,207,216,0.55); }
+  100% { background: rgba(29,69,85,0.12); }
+}
+.anim-toggle-btn.anim-toggle-flash { animation: animToggleFlash 0.4s ease-out; }
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: var(--db-row-bg);
+  border: 1px solid rgba(255,255,255,0.06);
+  color: var(--hud-text);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+  user-select: none;
+}
+.nav-item:hover { background: var(--db-row-bg-hover); }
+.nav-item.active {
+  background: linear-gradient(90deg, var(--db-cyan) 0%, var(--db-cyan-bright) 100%);
+  color: #0B2B30;
+  box-shadow: 0 0 18px rgba(64,207,216,0.55);
+}
+.nav-item .nav-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 15px;
+  overflow: hidden;
+}
+.nav-item .nav-icon img {
+  width: 78%;
+  height: 78%;
+  object-fit: contain;
+}
+.nav-item.active .nav-icon { background: rgba(11,43,48,0.18); }
+
+.nav-item.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.nav-item.disabled:hover { background: var(--db-row-bg); }
+
+.sidebar-footer {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--hud-text-dim);
+  opacity: 0.6;
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+
+/* ============================================================
+   Main content area
+   ============================================================ */
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 32px 0;
+  flex-shrink: 0;
+}
+
+.mobile-menu-btn {
+  display: none; /* shown only inside the mobile breakpoint below */
+  background: var(--hud-panel-bg);
+  border: 1px solid var(--hud-border);
+  color: var(--db-cyan-bright);
+  font-size: 18px;
+  line-height: 1;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.mobile-menu-btn:hover { background: var(--db-row-bg-hover); }
+
+.crumb {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--db-cyan-bright);
+  opacity: 0.85;
+}
+
+.sidebar-backdrop {
+  display: none; /* shown only inside the mobile breakpoint below, and only while the drawer is open */
+}
+
+/* ============================================================
+   Mobile breakpoint (Option B)
+   ============================================================
+   Below 768px, .sidebar stops sharing horizontal space with .main in
+   a flex row (the desktop behavior, unaffected above this width) and
+   instead becomes a slide-out drawer: fixed/absolute positioned, full
+   height, off-screen by default (translateX(-100%)), sliding in over
+   the content rather than squeezing it. This REUSES the exact same
+   .collapsed class and bindSidebarCollapse() toggle logic Option A's
+   desktop icon-only collapse already used -- not a second, parallel
+   state to keep in sync. At this width, "collapsed" means "drawer
+   closed (off-screen)" instead of "narrowed to 72px icons"; the
+   meaning of the SAME class simply changes per breakpoint, the same
+   way .equip-layout's grid-template-columns already does today.
+
+   A semi-transparent backdrop appears behind the open drawer (tap
+   anywhere on it to close, same as today's icon-zoom-overlay modal
+   pattern) so the drawer reads as a temporary overlay, not a
+   permanent part of the layout, on a screen too narrow to show both
+   navigation and content side by side at once.
+   ============================================================ */
+@media (max-width: 768px) {
+  .mobile-menu-btn { display: inline-block; }
+
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    width: 280px;
+    max-width: 84vw;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 8px 0 24px rgba(0,0,0,0.4);
+  }
+  /* At this width, .collapsed means "closed" (off-screen) -- the
+     OPPOSITE of its desktop meaning (narrowed-but-visible). Not
+     collapsed = drawer open, slid fully into view. */
+  .sidebar:not(.collapsed) {
+    transform: translateX(0);
+  }
+  /* The desktop icon-only collapsed styles (width:72px, icon-only nav
+     items) are irrelevant once the sidebar is off-screen at this
+     width -- explicitly restore full width/padding so the drawer
+     still looks like the FULL sidebar (logo, labels, language
+     selector) once slid open, not a 72px sliver. */
+  .sidebar.collapsed {
+    width: 280px;
+    max-width: 84vw;
+    padding: 28px 20px;
+  }
+  .sidebar.collapsed .sidebar-header > span,
+  .sidebar.collapsed .anim-toggle-btn,
+  .sidebar.collapsed .lang-selector-row,
+  .sidebar.collapsed .sidebar-footer-text {
+    display: flex;
+  }
+  .sidebar.collapsed .sidebar-header > span { display: inline; }
+  .sidebar.collapsed .nav-item {
+    justify-content: flex-start;
+    padding: 12px 16px;
+    gap: 14px;
+  }
+  .sidebar.collapsed .nav-item .nav-label { display: inline; }
+  .sidebar.collapsed .sidebar-footer { justify-content: flex-start; }
+  /* The desktop collapse toggle button (a small icon docked at the
+     sidebar's own edge) is hidden at this width -- it would be
+     invisible anyway whenever the drawer is closed (off-screen with
+     it), and the new always-visible .mobile-menu-btn in the topbar is
+     the actual open/close trigger here instead. */
+  .sidebar-collapse-btn { display: none; }
+
+  .sidebar-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    background: rgba(5,15,18,0.6);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .sidebar-backdrop.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .equip-layout { grid-template-columns: 1fr; }
+}
+
+.content-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 32px 40px;
+}
+
+.content-scroll::-webkit-scrollbar { width: 10px; }
+.content-scroll::-webkit-scrollbar-track { background: transparent; }
+.content-scroll::-webkit-scrollbar-thumb {
+  background: rgba(64,207,216,0.35);
+  border-radius: 5px;
+}
+
+/* ============================================================
+   Category tabs (weapon type selector, like the [1] sword icons [3])
+   ============================================================ */
+
+.equip-subnav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.equip-subnav-btn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: var(--radius-sm);
+  color: var(--hud-text-dim);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
+  padding: 9px 20px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.equip-subnav-btn:hover { background: rgba(255,255,255,0.1); color: var(--hud-text); }
+.equip-subnav-btn.active {
+  background: linear-gradient(90deg, var(--db-cyan) 0%, var(--db-cyan-bright) 100%);
+  color: #0B2B30;
+  border-color: transparent;
+  box-shadow: 0 0 14px rgba(64,207,216,0.4);
+}
+
+.type-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.type-tab {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 20px;
+  transition: all 0.15s ease;
+}
+.type-tab img {
+  width: 60%;
+  height: 60%;
+  object-fit: contain;
+  filter: brightness(0) invert(1) opacity(0.75);
+  transition: filter 0.15s ease;
+}
+.type-tab:hover img { filter: brightness(0) invert(1) opacity(0.9); }
+.type-tab.active img { filter: brightness(0) invert(1) opacity(1); }
+.type-tab:hover { background: rgba(255,255,255,0.12); }
+.type-tab.active {
+  border-color: var(--db-cyan);
+  background: rgba(64,207,216,0.18);
+  box-shadow: 0 0 12px rgba(64,207,216,0.45);
+}
+
+.type-tab-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--hud-text-dim);
+  margin-left: auto;
+}
+
+/* ============================================================
+   Weapon grid + list
+   ============================================================ */
+
+.weapon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 10px;
+}
+
+.weapon-tile {
+  position: relative;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+  overflow: hidden;
+}
+.weapon-tile:hover { transform: translateY(-2px); }
+.weapon-tile.selected {
+  box-shadow: 0 0 0 2px var(--db-cyan), 0 0 16px rgba(64,207,216,0.6);
+}
+.weapon-tile img {
+  position: relative;
+  z-index: 1;
+  max-width: 70%;
+  max-height: 70%;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)) grayscale(0.15);
+}
+.weapon-tile .rank-chip {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: rgba(0,0,0,0.5);
+}
+.weapon-tile .unverified-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 2;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #E0A33B;
+  box-shadow: 0 0 4px #E0A33B;
+}
+
+.weapon-list-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: var(--db-row-bg);
+  border: 1px solid rgba(255,255,255,0.05);
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.15s ease;
+}
+.weapon-list-row:hover { background: var(--db-row-bg-hover); }
+.weapon-list-row.selected {
+  background: linear-gradient(90deg, rgba(64,207,216,0.85), rgba(91,232,240,0.85));
+  color: #0B2B30;
+}
+.weapon-list-row .wl-icon {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.1);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.weapon-list-row .wl-icon img { width: 70%; height: 70%; object-fit: contain; }
+.weapon-list-row .wl-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+  flex: 1;
+  /* Same root cause as the sidebar language dropdown fix above: an
+     unverified item shows its raw ItemKey as a fallback (e.g.
+     "ItemName_WAX_37"), and without min-width:0 a flex item won't
+     shrink below its own content's intrinsic width -- so a long
+     enough raw key could push this row (and visually, the whole
+     360px-wide list column it sits in) wider than intended instead of
+     truncating in place. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.weapon-list-row .wl-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.6;
+  /* UI/UX fix: this class is used for raw paths (DT/BP Inspector
+     table paths, Wwise event paths) as well as short item keys --
+     confirmed across all 15 usages before this fix, not assumed.
+     flex-shrink:0 was actively wrong for the long-path cases: it
+     explicitly forbids the browser from shrinking an element whose
+     entire problem is its content being too wide, which is exactly
+     what was pushing rows (and the whole list pane) horizontally,
+     producing a second, unintended horizontal scrollbar alongside the
+     list's normal vertical one. Same fix pattern .wl-name already
+     documents and applies to itself just above -- truncate with an
+     ellipsis instead of growing the layout. The short-content usages
+     (item keys, codes) are unaffected, since text-overflow:ellipsis is
+     a no-op when content already fits. */
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Search / filter bar
+   ============================================================ */
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 200px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius-sm);
+  color: var(--hud-text);
+  padding: 10px 14px;
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+.search-input:focus {
+  outline: none;
+  border-color: var(--db-cyan);
+  box-shadow: 0 0 0 2px rgba(64,207,216,0.25);
+}
+.search-input::placeholder { color: var(--hud-text-dim); }
+
+.filter-select {
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius-sm);
+  color: var(--hud-text);
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+.filter-select:focus { outline: none; border-color: var(--db-cyan); }
+
+.toggle-btn {
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius-sm);
+  color: var(--hud-text-dim);
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.toggle-btn.active {
+  border-color: var(--db-cyan);
+  color: var(--db-cyan-bright);
+  background: rgba(64,207,216,0.12);
+}
+.toggle-btn:disabled,
+.toggle-btn.disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ============================================================
+   Equip / Simulator panel  (warm HUD style)
+   ============================================================ */
+
+.equip-layout {
+  display: grid;
+  grid-template-columns: 360px 1fr 380px;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .equip-layout { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   List pane scroll containment (UI/UX fix, Option A)
+   ============================================================
+   Every browser view's left-hand list ("...ListPane", e.g.
+   #loreListPane, #weaponListPane, #assetMaterialListPane -- 14
+   distinct IDs confirmed across every view file, all sharing this
+   exact suffix) used to size purely to its own content height, with
+   align-items:start on the parent grid meaning a long unconstrained
+   list could grow taller than the detail/preview column next to it,
+   visually "shrinking" that column and shifting the whole page layout
+   on every selection (the exact complaint: Lore's preview looking
+   squeezed, Asset Inspector "jumping" on tab/filter switches).
+
+   Some newer views (BP Inspector, Asset Inspector, DT/JSON Inspector,
+   Wwise Audio) already constrain their OWN inner list element
+   (className="hud-panel", with its own JS-set max-height) -- those
+   panes are marked with the .list-pane-self-managed class directly in
+   their view's HTML template (NOT detected via a CSS structural
+   selector like :has() -- deliberately avoided here since :has()
+   browser support, while broadly fine in modern browsers, isn't
+   guaranteed everywhere this tool might run, and a silently-skipped
+   rule would quietly reintroduce the exact bug being fixed here with
+   no visible error). This keeps those 5 views' existing visual
+   treatment exactly as-is (the .hud-panel border tracks the scrolling
+   content box, not a full-height outer wrapper around scrolling
+   content) while every OTHER list pane gets the same consistent
+   containment applied here.
+   ============================================================ */
+[id$="ListPane"]:not(.list-pane-self-managed) {
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ============================================================
+   Tab-of-tabs content fade (UI/UX fix, Option A)
+   ============================================================
+   The 3 tab-of-tabs views (#assetMainTabContent, #itemMainTabContent,
+   #characterTabContent -- confirmed every one ends in "TabContent")
+   each fully tear down and rebuild their content container on a
+   top-level tab switch (Materials<->Meshes, Catalog<->Recipes,
+   Characters<->Partners<->Customization) -- this IS the correct
+   behavior, not a bug, since each sub-tab has a genuinely different
+   layout/toolbar, not just filtered content the way the list-pane fix
+   above addresses. But tearing a container down to empty and
+   repopulating it can still read as a visual "jump." A short fade-in,
+   re-triggered via a CSS animation restart trick (removing then
+   re-adding the class forces the animation to replay -- handled in
+   each view's renderActiveMainTab()), softens that transition without
+   changing the actual rebuild behavior underneath it.
+   ============================================================ */
+@keyframes tabContentFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+[id$="TabContent"].tab-content-fade-in {
+  animation: tabContentFadeIn 0.15s ease;
+}
+
+.hud-panel {
+  background: var(--hud-panel-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  backdrop-filter: blur(2px);
+}
+
+.hud-panel h3 {
+  margin: 0 0 14px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--db-cyan-bright);
+  border-bottom: 1px solid var(--hud-border);
+  padding-bottom: 8px;
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.stat-icon {
+  width: 22px; height: 22px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+}
+.stat-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  width: 68px;
+  flex-shrink: 0;
+}
+.stat-bar-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.stat-bar-fill { height: 100%; border-radius: 3px; transition: width 0.2s ease; }
+.stat-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  width: 50px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.atk-display {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px;
+  background: rgba(0,0,0,0.2);
+  border-radius: var(--radius-sm);
+}
+.atk-display .atk-label {
+  font-family: var(--font-display);
+  color: var(--hud-atk-label);
+  font-weight: 700;
+  font-size: 14px;
+}
+.atk-display .atk-total {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--hud-text);
+}
+.atk-display .atk-breakdown {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--hud-text-dim);
+}
+.atk-display .atk-breakdown .acv { color: var(--hud-acv); font-weight: 600; }
+.atk-display .atk-breakdown .mod { color: var(--hud-mod); font-weight: 600; }
+
+.exmod-picker-label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--hud-text);
+}
+.exmod-slot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.exmod-slot-number {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(169,127,228,0.18);
+  border: 1px solid rgba(169,127,228,0.4);
+  color: var(--hud-mod);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.exmod-type-select {
+  flex: 1.4;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--radius-sm);
+  color: var(--hud-text);
+  font-family: var(--font-body);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.exmod-tier-select {
+  flex: 1;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(169,127,228,0.35);
+  border-radius: var(--radius-sm);
+  color: var(--hud-mod);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.exmod-tier-select:disabled {
+  opacity: 0.3;
+  border-color: rgba(255,255,255,0.1);
+  color: var(--hud-text-dim);
+}
+.exmod-type-select option, .exmod-tier-select option {
+  background: var(--hud-panel-bg-2);
+  color: var(--hud-text);
+}
+.ability-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ability-input-row label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  width: 40px;
+}
+.ability-input-row input[type="number"] {
+  width: 64px;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--radius-sm);
+  color: var(--hud-text);
+  font-family: var(--font-mono);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+.ability-input-row input[type="range"] { flex: 1; }
+.ability-input-row .rank-badge { width: 26px; height: 26px; }
+
+.acv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 8px;
+}
+.acv-table th, .acv-table td {
+  padding: 6px 8px;
+  text-align: center;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.acv-table th {
+  font-family: var(--font-display);
+  color: var(--hud-text-dim);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.acv-table td.contrib { font-family: var(--font-mono); color: var(--hud-acv); }
+
+/* ============================================================
+   Player tab (Characters > Player) -- visually inspired by the
+   in-game character sheet's header bar + stat layout, using this
+   project's existing flat HUD-panel idiom rather than a literal
+   circular/radial graphic (which would need bespoke positioning
+   fragile to font/zoom changes). Same grouped information
+   architecture as the reference screenshot: name+level header,
+   HP/Stamina/SP bars, ATK/DEF flanking the 7 allocatable stats,
+   Exp + Weapon Proficiency bars, Growth Points summary.
+   ============================================================ */
+.player-header-bar {
+  background: var(--db-cream);
+  color: #1D4555;
+  font-family: var(--font-display);
+  font-weight: 700;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  margin-bottom: 14px;
+}
+.player-header-bar .player-name-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(29,69,85,0.35);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  color: #1D4555;
+  width: 140px;
+  padding: 2px 0;
+}
+.player-header-bar .player-name-input:focus { outline: none; border-bottom-color: #1D4555; }
+.player-header-bar .player-level-badge {
+  background: #1D4555;
+  color: var(--db-cream);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.player-vital-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.player-vital-row img { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
+.player-vital-row .player-vital-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  width: 58px;
+  flex-shrink: 0;
+}
+.player-vital-row .player-vital-bar-wrap {
+  flex: 1;
+  height: 6px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.player-vital-row .player-vital-bar-fill { height: 100%; border-radius: 3px; }
+.player-vital-row .player-vital-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--hud-text-dim);
+  width: 64px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.player-vital-row.hp .player-vital-bar-fill { background: var(--hud-hp); }
+.player-vital-row.stamina .player-vital-bar-fill { background: var(--hud-stamina); }
+.player-vital-row.sp .player-vital-bar-fill { background: var(--hud-sp); }
+
+.player-atk-def-row {
+  display: flex;
+  justify-content: space-around;
+  text-align: center;
+  margin: 16px 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--hud-border);
+  border-bottom: 1px solid var(--hud-border);
+}
+.player-atk-def-row .atk-block .val { color: var(--hud-atk-label); }
+.player-atk-def-row .def-block .val { color: var(--db-cyan-bright); }
+.player-atk-def-row .val { font-family: var(--font-mono); font-size: 26px; font-weight: 700; line-height: 1; }
+.player-atk-def-row .lbl { font-family: var(--font-display); font-size: 12px; color: var(--hud-text-dim); margin-top: 4px; }
+
+.player-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  margin-bottom: 16px;
+}
+.player-stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+.player-stat-row .player-stat-name { font-family: var(--font-display); font-size: 12px; flex-shrink: 0; }
+.player-stat-row .player-stat-controls { display: flex; align-items: center; gap: 6px; }
+.player-stat-row .player-stat-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  width: 26px;
+  text-align: center;
+}
+.gp-stat-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--hud-border);
+  background: rgba(255,255,255,0.06);
+  color: var(--hud-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gp-stat-btn:hover:not(:disabled) { background: var(--db-cyan); color: #0F2429; }
+.gp-stat-btn:disabled { opacity: 0.3; cursor: default; }
+
+.player-gp-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+.player-gp-banner img { width: 18px; height: 18px; }
+.player-gp-banner .gp-remaining { font-family: var(--font-mono); margin-left: auto; }
+.player-gp-banner .gp-remaining.zero { color: var(--hud-text-dim); }
+.player-gp-banner .gp-remaining.positive { color: var(--rank-s); font-weight: 700; }
+
+.player-gear-slot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.player-gear-slot:hover { border-color: var(--db-cyan); }
+.player-gear-slot.active { border-color: var(--db-cyan); background: rgba(64,207,216,0.08); }
+.player-gear-slot .gear-slot-icon {
+  width: 36px; height: 36px; flex-shrink: 0; border-radius: var(--radius-sm);
+  background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.player-gear-slot .gear-slot-icon img { width: 100%; height: 100%; object-fit: contain; }
+.player-gear-slot .gear-slot-info { flex: 1; min-width: 0; }
+.player-gear-slot .gear-slot-label { font-size: 10px; color: var(--hud-text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.player-gear-slot .gear-slot-name { font-family: var(--font-display); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-gear-slot .gear-slot-name.empty { color: var(--hud-text-dim); font-style: italic; }
+
+.gear-picker-panel {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--db-cyan);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin: -4px 0 12px;
+}
+.gear-picker-panel .gear-picker-list {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+.gear-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.gear-picker-row:hover { background: rgba(64,207,216,0.12); }
+.gear-picker-row.selected { background: rgba(64,207,216,0.2); }
+.gear-picker-row img { width: 26px; height: 26px; object-fit: contain; flex-shrink: 0; }
+
+.enhancement-slider-wrap {
+  margin: 16px 0;
+}
+.enhancement-slider-wrap .slider-label {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-display);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.enhancement-slider-wrap .slider-label .plus-val {
+  color: var(--db-cyan-bright);
+  font-weight: 700;
+}
+input[type="range"] {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 2px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--db-cyan-bright);
+  box-shadow: 0 0 8px rgba(64,207,216,0.7);
+  cursor: pointer;
+}
+
+.weapon-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.weapon-preview .preview-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  margin: 10px 0 2px;
+}
+.weapon-preview .preview-name.unverified { color: #E0A33B; }
+.weapon-preview .preview-itemkey {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--hud-text-dim);
+  margin-bottom: 14px;
+}
+.weapon-preview .preview-img-wrap {
+  width: 220px;
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.weapon-preview .preview-img-wrap img {
+  position: relative;
+  z-index: 1;
+  max-width: 78%;
+  max-height: 78%;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 18px rgba(0,0,0,0.6)) grayscale(0.15);
+}
+
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+.rank-badge img { width: 100%; height: 100%; }
+
+.mod-callout {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: rgba(169,127,228,0.08);
+  border: 1px solid rgba(169,127,228,0.3);
+  border-radius: var(--radius-sm);
+}
+.mod-callout-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mod-callout-main {
+  flex: 1;
+  min-width: 0;
+}
+.mod-callout .mod-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--hud-mod);
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.mod-callout .mod-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--hud-text-dim);
+  margin-bottom: 4px;
+}
+.mod-callout .mod-source-tag {
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--hud-text-dim);
+  opacity: 0.65;
+  max-width: 42%;
+}
+.source-footnote {
+  text-align: left;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--hud-text-dim);
+  opacity: 0.65;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.mod-callout .mod-effect-line {
+  font-size: 12px;
+  color: var(--hud-text-dim);
+  margin: 2px 0;
+}
+.mod-callout.unresolved {
+  background: rgba(224,163,59,0.08);
+  border-color: rgba(224,163,59,0.35);
+}
+.mod-callout.unresolved .mod-name { color: var(--rank-a); }
+
+.item-description {
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--hud-text-dim);
+  font-style: italic;
+  padding: 10px 12px;
+  margin-top: 10px;
+  background: rgba(255,255,255,0.03);
+  border-left: 2px solid var(--db-cyan);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.item-description.unverified-desc {
+  border-left-color: #E0A33B;
+}
+.mod-callout .mod-description {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--hud-text);
+  opacity: 0.85;
+  margin: 6px 0 8px;
+  font-style: italic;
+}
+
+/* ============================================================
+   Badges / pills
+   ============================================================ */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.1);
+}
+.pill.unverified { background: rgba(224,163,59,0.18); color: var(--rank-a); }
+.pill.verified { background: rgba(94,235,109,0.15); color: var(--hud-hp); }
+
+/* ============================================================
+   JSON Inspector
+   ============================================================ */
+
+.json-inspector {
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  color: #B8E8EC;
+}
+.json-inspector .jk { color: var(--db-cyan-bright); }
+.json-inspector .jv-str { color: #E0A33B; }
+.json-inspector .jv-num { color: #5EEB6D; }
+.json-inspector .jv-bool { color: #A97FE4; }
+
+/* ============================================================
+   Empty / placeholder states
+   ============================================================ */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--hud-text-dim);
+  text-align: center;
+  padding: 60px 20px;
+  gap: 10px;
+}
+.empty-state .empty-icon { font-size: 40px; opacity: 0.4; margin-bottom: 8px; }
+.empty-state h4 { font-family: var(--font-display); color: var(--hud-text); margin: 0; }
+.empty-state p { font-size: 13px; max-width: 360px; margin: 0; }
+
+/* ============================================================
+   Equipment icon "scan frame" -- matches the in-game item icon
+   treatment: teal background with horizontal scanlines, border
+   colored by item rank (corners cut top-left/top-right), plus a
+   blue translucent bar that sweeps bottom-to-top on a timer.
+   ============================================================ */
+
+.scan-frame {
+  position: relative;
+  background-color: #5A8C8C;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255,255,255,0.10) 0px,
+    rgba(255,255,255,0.10) 2px,
+    rgba(0,0,0,0.08) 2px,
+    rgba(0,0,0,0.08) 4px
+  );
+  border: 2px solid var(--frame-rank-color, #8A9096);
+  clip-path: polygon(14px 0, 100% 0, 100% 100%, 0 100%, 0 14px);
+  box-shadow: 0 0 10px var(--frame-rank-glow, rgba(138,144,150,0.4)), inset 0 0 14px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+.scan-frame.scan-frame-sm { clip-path: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px); }
+
+/*
+ * ROOT CAUSE (found after a screenshot showed literally zero visible
+ * motion on any icon, not just wrong timing): .scan-bar was positioned
+ * with `bottom: 100%`, which anchors the bar's BOTTOM edge at the
+ * frame's TOP edge -- so the whole bar sits straddling/above the
+ * frame's top boundary at rest, permanently clipped out of view by
+ * .scan-frame's `overflow: hidden`. The old keyframe's translateY(0)
+ * (rest) and translateY(-100%) (swept-away) both kept it in that same
+ * off-screen region above the frame -- neither end of that transform
+ * range ever brought the bar INTO the visible frame area. This bug was
+ * independent of the timing-percentage bug fixed in the previous pass,
+ * and is the actual reason the bar was invisible the whole time.
+ *
+ * FIX: anchor the bar with `top: 100%` instead, so it rests just BELOW
+ * the frame (touching its bottom edge) rather than above it, then
+ * animate `top` itself down to -35% (= -(this rule's own height: 35%),
+ * which clears the bar fully above the frame). top/bottom percentages
+ * are relative to the .scan-frame container, so this sweep distance is
+ * directly readable: 100% down to -<own height>% always sweeps exactly
+ * from "fully below" to "fully above," regardless of frame size.
+ */
+@keyframes scanBarSweep {
+  0%      { top: 100%;  opacity: 0; }
+  1%      { opacity: 1; }
+  17.6%   { opacity: 1; }
+  18.18%  { top: calc(-1 * var(--scan-bar-height-pct, 35) * 1%);  opacity: 0; }
+  100%    { top: calc(-1 * var(--scan-bar-height-pct, 35) * 1%);  opacity: 0; }
+}
+
+.scan-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: calc(var(--scan-bar-height-pct, 35) * 1%);
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--scan-bar-color, rgba(120,200,255,0.35)) 50%,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 3;
+  animation: scanBarSweep var(--scan-cycle-ms, 5500ms) linear infinite;
+  animation-delay: 0ms;
+}
+
+body.scan-bar-disabled .scan-bar { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-bar { display: none; }
+}
+
+/* ============================================================
+   Loading skeletons -- shown briefly while a view's data is
+   being fetched/re-rendered (e.g. switching language, switching
+   weapon category) so the UI feels responsive rather than
+   flashing blank or jumping straight to final content.
+   ============================================================ */
+
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+.skel {
+  background: rgba(255,255,255,0.06);
+  border-radius: var(--radius-sm);
+  animation: skeletonPulse 1.4s ease-in-out infinite;
+}
+
+.skel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 10px;
+}
+.skel-tile { aspect-ratio: 1; }
+
+.skel-detail-panel { padding: 4px; }
+.skel-img { width: 220px; height: 220px; margin: 0 auto 14px; }
+.skel-line { height: 14px; margin-bottom: 10px; }
+.skel-line.w-60 { width: 60%; }
+.skel-line.w-80 { width: 80%; }
+.skel-line.w-40 { width: 40%; margin-left: auto; margin-right: auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skel { animation: none; opacity: 0.5; }
+}
+
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--db-bg-deep);
+  gap: 16px;
+  z-index: 100;
+}
+.loading-ring {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 2px solid rgba(64,207,216,0.2);
+  border-top-color: var(--db-cyan-bright);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-screen .loading-text {
+  font-family: var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 13px;
+  color: var(--db-cyan-bright);
+}
+
+/* ============================================================
+   Coverage report banner
+   ============================================================ */
+
+.coverage-banner {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--hud-text-dim);
+  flex-wrap: wrap;
+}
+.coverage-banner b { color: var(--hud-text); }
+
+.dev-ref-mapping-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.dev-ref-mapping-row:last-of-type { border-bottom: none; }
+
+/* ============================================================
+   Icon zoom lightbox
+   ============================================================ */
+
+.tile-zoom-btn {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: var(--hud-text);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  z-index: 2;
+}
+.weapon-tile:hover .tile-zoom-btn { opacity: 1; }
+.tile-zoom-btn:hover { background: rgba(64,207,216,0.4); }
+
+.zoomable-icon { cursor: zoom-in; }
+
+.icon-zoom-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(8, 18, 22, 0.85);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: zoomFadeIn 0.15s ease;
+}
+@keyframes zoomFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.icon-zoom-box {
+  position: relative;
+  background: var(--hud-panel-bg-2);
+  border: 1px solid var(--db-cyan);
+  box-shadow: 0 0 40px rgba(64,207,216,0.35);
+  border-radius: var(--radius-md);
+  padding: 36px 48px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+.icon-zoom-frame {
+  width: min(50vw, 480px);
+  height: min(50vw, 480px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-zoom-box img {
+  position: relative;
+  z-index: 1;
+  width: 78%;
+  height: 78%;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 30px rgba(0,0,0,0.7)) grayscale(0.15);
+  image-rendering: -webkit-optimize-contrast;
+}
+.icon-zoom-caption {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  margin-top: 16px;
+  color: var(--hud-text);
+}
+.icon-zoom-sub {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--hud-text-dim);
+  margin-top: 2px;
+}
+.icon-zoom-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: var(--hud-text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.icon-zoom-close:hover { background: rgba(224,69,95,0.3); }
+
+/* ============================================================
+   Disclaimer modal
+   ============================================================ */
+
+.disclaimer-overlay {
+  z-index: 2000; /* above the icon-zoom overlay (1000), so it can never be hidden behind a zoomed icon */
+  padding: 20px;
+}
+.disclaimer-box {
+  position: relative;
+  background: var(--hud-panel-bg-2);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-md);
+  padding: 32px 36px;
+  max-width: 560px;
+  width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+.disclaimer-logo {
+  max-width: 280px;
+  width: 100%;
+  margin: 0 auto 18px;
+  display: block;
+  filter: drop-shadow(0 6px 20px rgba(0,0,0,0.5));
+}
+.disclaimer-box h2 {
+  font-family: var(--font-display);
+  font-size: 20px;
+  color: var(--db-cyan-bright);
+  margin: 0 0 16px;
+}
+.disclaimer-body {
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--hud-text-dim);
+}
+.disclaimer-body p { margin: 0 0 12px; }
+.disclaimer-body p:last-child { margin-bottom: 0; }
+.disclaimer-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  margin: 20px 0 16px;
+  font-size: 13px;
+  color: var(--hud-text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.disclaimer-checkbox-row input { cursor: pointer; }
+#disclaimerAcceptBtn {
+  padding: 10px 28px;
+  font-size: 14px;
+}
+
+/* ============================================================
+   Budget Tracker modal -- a content viewer, not a one-time gate,
+   so it reuses .disclaimer-box's panel styling but widens it (tables
+   need room) and left-aligns the body instead of centering prose.
+   ============================================================ */
+.budget-tracker-box {
+  max-width: 640px;
+  text-align: left;
+}
+.budget-tracker-box h2 {
+  text-align: center;
+}
+.budget-tracker-subtitle {
+  text-align: center;
+  font-size: 12px;
+  color: var(--hud-text-dim);
+  margin: -10px 0 16px;
+}
+.budget-tracker-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  background: none;
+  border: none;
+  color: var(--hud-text-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.budget-tracker-close:hover { color: var(--hud-text); }
+.budget-tracker-section-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--db-cyan-bright);
+  margin: 18px 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.budget-tracker-table th, .budget-tracker-table td { font-size: 12px; }
+.budget-tracker-big-figure {
+  text-align: center;
+  margin: 18px 0 10px;
+  padding: 14px 10px;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-sm);
+}
+.budget-tracker-big-number {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--rank-s);
+  letter-spacing: -0.02em;
+}
+.budget-tracker-big-caption {
+  font-size: 11px;
+  color: var(--hud-text-dim);
+  margin-top: 4px;
+}
+
+/* ============================================================
+   Accessibility
+   ============================================================ */
+
+:focus-visible {
+  outline: 2px solid var(--db-cyan-bright);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
