@@ -31,6 +31,8 @@ const DataStore = {
   recipesByCategory: {}, // { OneHandedSword: [...], Usable: [...], ... } -- 11 categories
   recipesByItemKey: {},  // { "ItemName_OneHandedSwordRecipe_1": recipe }
   recipeCategoryIndex: null, // { count, categoryCounts: {...}, file }
+  itemSources: {},       // { itemKey: { recipe, recipeAvailableInShops, foundInChests, droppedByMonsters, usedAsMaterialIn, ... } }
+  itemSourcesIndex: null,
   recipeLocalization: {}, // { itemKey: { name, verified, source, description, descriptionVerified, descriptionSource } } -- for currentLanguage; name/description are already template-substituted server-side, not raw {Rep_ItemName_*} strings
   recipeLocalizationManifest: null,
   loreList: [],            // flat list -- Lore has NO sub-categories (SubCategory unused on all 177 rows, confirmed), unlike every other category
@@ -202,6 +204,21 @@ const DataStore = {
       if (!this.recipesByCategory[r.category]) this.recipesByCategory[r.category] = [];
       this.recipesByCategory[r.category].push(r);
       this.recipesByItemKey[r.itemKey] = r;
+    }
+
+    // Item Sources: a per-itemKey cross-reference (recipe/cost/
+    // materials, which chests/monster drops it's found through, what
+    // consumes it as a crafting material) built server-side by
+    // build_item_sources so Weapon/Armor/Consumable preview panels do
+    // one dict lookup instead of re-scanning Chests/Drops/Shops
+    // client-side. Optional fetch -- older builds without this
+    // section still work, just without the extra preview panel.
+    try {
+      this.itemSourcesIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/ItemSources/_index.json`);
+      this.itemSources = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/ItemSources/ItemSources.json`);
+    } catch (e) {
+      this.itemSourcesIndex = null;
+      this.itemSources = {};
     }
 
     // Lore is a flat list with no sub-categories (unlike weapons/
@@ -855,6 +872,54 @@ const DataStore = {
       verified: this.isItemNameVerified(m.itemKey),
       quantity: m.quantity,
     }));
+  },
+
+  /**
+   * The per-item cross-reference build_item_sources() assembled from
+   * Recipes/Chests/Drops/Shops -- see that builder's own docstring
+   * for exactly what each field means and its honest limits. Returns
+   * null (not a fabricated empty shape) when the item genuinely has
+   * no entry, which happens if item_sources hasn't been built on this
+   * instance yet -- callers should treat null as "unknown", not "no
+   * sources exist".
+   */
+  getItemSources(itemKey) {
+    return this.itemSources[itemKey] || null;
+  },
+
+  /**
+   * Small-icon lookup for ANY itemKey, regardless of which category
+   * it actually belongs to (weapon/armor/item) -- used by the shared
+   * Sources & Crafting panel to show a thumbnail next to recipe
+   * materials, produced items, etc. without the panel needing to know
+   * which category each cross-referenced key came from. Returns null
+   * (never a guessed path) when the key isn't found in any of the
+   * three loaded collections -- callers should omit the icon, not
+   * show a broken image.
+   */
+  getItemIconPath(itemKey) {
+    const w = this.weaponsByItemKey[itemKey];
+    if (w) return (w.textures && w.textures.icon) || null;
+    const a = this.armorByItemKey[itemKey];
+    if (a && a.textures) return a.textures.iconSmallMale || a.textures.iconMale || a.textures.icon || null;
+    const i = this.itemsByItemKey[itemKey];
+    if (i && i.textures) return i.textures.iconDatabase || i.textures.icon || null;
+    return null;
+  },
+
+  /**
+   * Resolves a monster-drop hit's enemyNameKey to a display name via
+   * the SAME Monster database name resolution Monsters > Drops
+   * already uses, falling back to the raw enemy code when no
+   * database entry matches (the same honest fallback that section
+   * uses -- never fabricates a monster name).
+   */
+  getDropSourceMonsterName(hit) {
+    if (hit.enemyNameKey) {
+      const monster = this.getMonsterByTitleKey ? this.getMonsterByTitleKey(hit.enemyNameKey) : null;
+      if (monster) return this.getMonsterDisplayName(monster);
+    }
+    return hit.enemyCode || hit.rewardKey || "Unknown";
   },
 
   /**

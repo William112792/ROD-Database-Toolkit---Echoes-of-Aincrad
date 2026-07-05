@@ -334,6 +334,7 @@ const ItemsBrowserView = {
         </div>
 
         ${this.renderExceptionNotice(item)}
+        ${renderItemSourcesPanelHtml(item.itemKey)}
       </div>
     `;
 

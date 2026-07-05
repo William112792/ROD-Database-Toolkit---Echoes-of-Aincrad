@@ -300,6 +300,7 @@ const WeaponsBrowserView = {
         </div>
 
         ${this.renderModCallout(weapon)}
+        ${renderItemSourcesPanelHtml(weapon.itemKey)}
       </div>
     `;
 

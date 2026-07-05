@@ -11,44 +11,81 @@
 //   - Floor overview overlays come from WBP_Map_FloorMap_WL01's
 //     CanvasPanelSlot offsets -- the game's own layout.
 //
-// CRITICAL BUG FOUND AND FIXED: MapPieceDataDetails' array order does
-// NOT match alphabetical piece-letter order (one area's array is
-// [c, a, b], not [a, b, c]; ALL 7 currently-textured areas had
-// non-alphabetical order). The pipeline used to construct each
-// piece's filename from its ARRAY INDEX, silently pairing every
-// position with the WRONG texture. Fixed in build_pipeline.py to read
-// the real filename from each entry's own PieceTexture field.
+// ICONS: 25 real game icon sprites (Widget/3DMapCapture/MapIcon/
+// IconImages), recolored server-side by build_pipeline.py's
+// build_map_icons() -- each is an unrecolored red(shape)/green(shadow)
+// mask sprite, verified by direct pixel sampling, not final art.
+// White = explicitly unconfirmed color, never a guess.
 //
-// ICONS: the game's own map icon sprites (Widget/3DMapCapture/MapIcon/
-// IconImages) are unrecolored red/green MASK layers, not final art --
-// verified by direct pixel sampling. build_pipeline.py's
-// build_map_icons() recolors them (green -> soft drop shadow, red ->
-// flat fill) into Content/ROD/DataAssets/_MapIcons/*.png using
-// explicit user-confirmed colors where given, and WHITE (stated as
-// unconfirmed, not guessed) otherwise. This view only ever renders
-// those pre-recolored PNGs.
+// MANUAL MARKERS (new): this export has NO coordinate data at all for
+// most icon types, and NONE for Towns/Dungeons. Rather than leave
+// those permanently empty, a small user-content system (mirroring
+// Modding Guides' own outside-the-pipeline pattern) lets a person
+// place a pin anywhere on any of the four map surfaces via a form
+// (pick an icon, enter normalized X/Y 0-1, optional label, submit),
+// backed by server.js's /api/map-markers/:mapType/:areaKey endpoints
+// and stored in map-markers/*.json at the project root -- never
+// touched by build_pipeline.py, exactly like guides/. Capped at 999
+// entries per map surface (server-enforced).
 //
-// FOUR modes, switched by the top tab bar:
-//   - Field Map: the original per-area interactive composite (pan/
-//     zoom, click-to-toggle legend, real markers, mask blending).
-//   - World View: ALL textured areas' pieces plotted on ONE shared
-//     canvas at the same real-world scale -- possible with zero new
-//     data, since every piece already carries absolute world
-//     coordinates; answers "chunks lined up together like the big
-//     map" without needing anything Field Map's per-area view
-//     doesn't already have.
-//   - Towns / Dungeons: single pre-composited reference images (no
-//     per-piece math needed) with an explicit, unhidden limitation:
-//     no coordinate data exists anywhere in this export scaled to
-//     THESE image spaces, so they browse as reference images, not
-//     interactive marker maps.
-//
-// Waypoints (the user's requested "drag a pin from the legend"
-// interaction): dragging the Waypoints legend icon onto the map drops
-// a pin at that point. This is IN-MEMORY, per-session scratch data --
-// no backend exists to persist user-placed pins, and that's stated in
-// the UI rather than silently losing them on refresh without saying so.
+// FOUR modes, switched by the top tab bar: Field Map, World View,
+// Towns, Dungeons. Field Map / World View use real world coordinates
+// for their pieces and auto markers; Towns / Dungeons are a
+// completely different, simpler asset (single pre-composited images)
+// with NO automatic markers -- only manual ones, which is exactly
+// what unlocks a real legend for them per the request.
 // ============================================================
+
+// Canonical icon catalog for the Add-Marker picker and legends.
+// Keys match build_pipeline.py's MAP_ICON_COLORS exactly.
+const MAP_ICON_CATALOG = [
+  { key: "safeArea", label: "Safe Area", fallback: "▲" },
+  { key: "warpTerminal", label: "Warp Terminal", fallback: "◆" },
+  { key: "town", label: "Town", fallback: "◆" },
+  { key: "dungeon", label: "Dungeon Entrance", fallback: "◆" },
+  { key: "searchTerminal", label: "Search Terminal", fallback: "◆" },
+  { key: "door", label: "Door", fallback: "◆" },
+  { key: "seal", label: "Seal", fallback: "◆" },
+  { key: "magicalSeal", label: "Magical Seal", fallback: "◆" },
+  { key: "ark", label: "Ark", fallback: "◆" },
+  { key: "boss", label: "Boss", fallback: "☠" },
+  { key: "eliteMonster", label: "Elite Monster", fallback: "☠" },
+  { key: "monsterSpawn", label: "Monster", fallback: "✦" },
+  { key: "townSmithy", label: "Smithy", fallback: "◆" },
+  { key: "townItemSeller", label: "Shop", fallback: "◆" },
+  { key: "townChest", label: "Chest", fallback: "▣" },
+  { key: "treasureChest", label: "Treasure Chest", fallback: "▣" },
+  { key: "player", label: "Player", fallback: "●" },
+  { key: "material", label: "Material", fallback: "✿" },
+  { key: "sideQuestTrinket", label: "Side Quest Trinket", fallback: "◆" },
+  { key: "missionObjective", label: "Mission Objective", fallback: "◈" },
+  { key: "waypoint", label: "Waypoint Pin (Classic)", fallback: "📍" },
+  { key: "waypointPinBase", label: "Waypoint Pin (Base)", fallback: "📍" },
+  { key: "waypointPinCommon", label: "Waypoint Pin (Common)", fallback: "📍" },
+  { key: "waypointPinEnemy", label: "Waypoint Pin (Enemy)", fallback: "📍" },
+  { key: "waypointPinGimmick", label: "Waypoint Pin (Gimmick)", fallback: "📍" },
+  { key: "waypointPinItem", label: "Waypoint Pin (Item)", fallback: "📍" },
+];
+const MAP_ICON_BY_KEY = Object.fromEntries(MAP_ICON_CATALOG.map((i) => [i.key, i]));
+
+// Default legend layers shown per surface before any manual markers
+// exist -- curated per the user's own examples ("Towns should have
+// Smithy/Shop/Chest"; "Dungeons should have Safe Areas/Warp
+// Terminals/Boss/Treasure Chest/Materials"). Any OTHER icon key that
+// actually has a manual entry on a given surface is unioned in too,
+// so nothing placed is ever invisible in its own legend.
+const MAP_DEFAULT_LEGEND = {
+  field: ["safeArea", "warpTerminal", "treasureChest", "ark", "seal", "magicalSeal",
+          "sideQuestTrinket", "boss", "eliteMonster", "monsterSpawn", "material",
+          "missionObjective", "door", "searchTerminal", "waypoint"],
+  world: ["safeArea", "warpTerminal", "treasureChest", "ark", "seal", "magicalSeal",
+          "sideQuestTrinket", "boss", "eliteMonster", "monsterSpawn", "material",
+          "missionObjective", "town", "dungeon", "waypoint"],
+  town: ["townSmithy", "townItemSeller", "townChest", "safeArea", "warpTerminal",
+         "boss", "treasureChest", "material", "door", "waypoint"],
+  dungeon: ["safeArea", "warpTerminal", "boss", "eliteMonster", "treasureChest",
+            "material", "seal", "magicalSeal", "ark", "door", "monsterSpawn", "waypoint"],
+};
 
 const WorldMapBrowserView = {
   state: {
@@ -60,16 +97,14 @@ const WorldMapBrowserView = {
     worldCode: null,
     townCode: null,
     dungeonSuffix: null,
-    layers: {
-      safeArea: true, warpTerminal: true, treasureChest: true, waypoint: true,
-      ark: true, seal: true, magicalSeal: true, sideQuestTrinket: true,
-      boss: false, monsterSpawn: false, material: false, missionObjective: false,
-    },
+    layers: {},          // populated per-surface from MAP_DEFAULT_LEGEND, all on by default
     zoom: 1,
     panX: 0,
     panY: 0,
     selectedMarkerId: null,
-    waypoints: {},      // { "field:<gateId>" | "world:<code>": [{id,x,y}] }
+    manualCache: {},     // { "mapType:areaKey": { entries, count, max } }
+    addForm: { icon: "waypointPinCommon", x: "0.5", y: "0.5", label: "" },
+    previewHidden: false,
   },
 
   async render(container) {
@@ -121,6 +156,30 @@ const WorldMapBrowserView = {
   renderModeBody() {
     const body = document.getElementById("mapModeBody");
     body.innerHTML = "";
+    const iconCount = Object.keys(this.icons()).length;
+    if (iconCount === 0) {
+      // The recolored icon set (26 keys) comes from a pipeline step
+      // that needs Pillow + numpy (see build_map_icons in
+      // build_pipeline.py) -- it degrades gracefully rather than
+      // crashing the build when they're missing, but the visible
+      // result is every marker/legend row falling back to a plain
+      // text/Unicode symbol instead of a real icon image. Surfacing
+      // that plainly here so "old/wrong icons" reads as "not built
+      // yet" rather than a rendering bug.
+      const banner = document.createElement("div");
+      banner.className = "coverage-banner";
+      banner.style.marginBottom = "8px";
+      banner.innerHTML = `
+        <span class="pill unverified">no recolored icons found</span>
+        <span style="opacity:0.85;">Markers are showing plain fallback symbols instead of real
+        icons. Map icon recoloring runs on the Python standard library alone (no Pillow/numpy
+        required) — run the <b>World</b> or <b>Textures</b> focus build from the Build
+        Dashboard (or <code>python3 tools/build_pipeline.py --group=world</code>) to generate
+        them, then reload this page. If you've already done that and still see this, check the
+        server log for a "Map icons" line for a more specific error.</span>
+      `;
+      body.appendChild(banner);
+    }
     if (this.state.mode === "world") return this.renderWorldView(body);
     if (this.state.mode === "towns") return this.renderTownsView(body);
     if (this.state.mode === "dungeons") return this.renderDungeonsView(body);
@@ -216,8 +275,175 @@ const WorldMapBrowserView = {
     this.render(this.container);
   },
 
+  // ---------- Manual markers (server-backed, per map surface) ----------
+  manualCacheKey(mapType, areaKey) {
+    return `${mapType}:${areaKey}`;
+  },
+
+  async loadManualMarkers(mapType, areaKey) {
+    const cacheKey = this.manualCacheKey(mapType, areaKey);
+    try {
+      const res = await fetch(`/api/map-markers/${encodeURIComponent(mapType)}/${encodeURIComponent(areaKey)}`);
+      const data = await res.json();
+      this.state.manualCache[cacheKey] = data;
+      return data;
+    } catch (e) {
+      this.state.manualCache[cacheKey] = { entries: [], count: 0, max: 999 };
+      return this.state.manualCache[cacheKey];
+    }
+  },
+
+  getManualMarkers(mapType, areaKey) {
+    const cacheKey = this.manualCacheKey(mapType, areaKey);
+    return this.state.manualCache[cacheKey] || { entries: [], count: 0, max: 999 };
+  },
+
+  async submitManualMarker(mapType, areaKey, refreshFn) {
+    const form = this.state.addForm;
+    const x = Number(form.x), y = Number(form.y);
+    if (!form.icon || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+      alert("Pick an icon and enter X/Y between 0 and 1.");
+      return;
+    }
+    try {
+      const res = await fetch(`/api/map-markers/${encodeURIComponent(mapType)}/${encodeURIComponent(areaKey)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ iconKey: form.icon, x, y, label: form.label || "" }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.error || "Could not add marker"); return; }
+      await this.loadManualMarkers(mapType, areaKey);
+      this.state.addForm.label = "";
+      if (refreshFn) refreshFn();
+    } catch (e) {
+      alert(`Failed to add marker: ${e.message}`);
+    }
+  },
+
+  async deleteManualMarker(mapType, areaKey, entryId, refreshFn) {
+    try {
+      const res = await fetch(`/api/map-markers/${encodeURIComponent(mapType)}/${encodeURIComponent(areaKey)}/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) { alert(data.error || "Could not delete marker"); return; }
+      await this.loadManualMarkers(mapType, areaKey);
+      if (refreshFn) refreshFn();
+    } catch (e) {
+      alert(`Failed to delete marker: ${e.message}`);
+    }
+  },
+
+  // Renders the "Add Marker" form + existing-manual-entries list. Call
+  // after the map stage exists so "click map to fill X/Y" can attach.
+  renderAddMarkerPanel(mapType, areaKey, opts) {
+    const el = document.getElementById("mapAddMarkerPanel");
+    if (!el) return;
+    const manual = this.getManualMarkers(mapType, areaKey);
+    const form = this.state.addForm;
+    el.innerHTML = `
+      <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--hud-text); margin-bottom:8px;">
+        Add a marker <span style="font-size:10px; color:var(--hud-text-dim); font-weight:400;">(${manual.count}/${manual.max})</span>
+      </div>
+      <select id="markerIconSelect" class="filter-select" style="width:100%; margin-bottom:6px;">
+        ${MAP_ICON_CATALOG.map((i) => `<option value="${i.key}" ${form.icon === i.key ? "selected" : ""}>${escapeHtml(i.label)}</option>`).join("")}
+      </select>
+      <div style="display:flex; gap:6px; margin-bottom:6px;">
+        <input type="number" id="markerXInput" min="0" max="1" step="0.001" value="${escapeHtml(String(form.x))}" placeholder="X (0-1)" class="search-input" style="width:50%;"/>
+        <input type="number" id="markerYInput" min="0" max="1" step="0.001" value="${escapeHtml(String(form.y))}" placeholder="Y (0-1)" class="search-input" style="width:50%;"/>
+      </div>
+      <input type="text" id="markerLabelInput" value="${escapeHtml(form.label)}" placeholder="Label (optional)" class="search-input" style="width:100%; margin-bottom:6px;"/>
+      <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+        <div style="font-size:10px; color:var(--hud-text-dim); flex:1;">Click the map to fill X/Y from where you click (also moves the dashed preview pin), or type them directly.</div>
+        <button class="toggle-btn" id="markerPreviewToggleBtn" style="font-size:10px; padding:3px 8px; white-space:nowrap;" title="Hide/show the dashed preview pin so it doesn't get confused with markers already placed on the map">${this.state.previewHidden ? "Show preview" : "Hide preview"}</button>
+      </div>
+      <button class="toggle-btn" id="markerSubmitBtn" style="width:100%;" ${manual.count >= manual.max ? "disabled" : ""}>＋ Add Marker</button>
+      <div id="markerExistingList" style="margin-top:10px;"></div>
+      <div style="font-size:10px; color:var(--hud-text-dim); margin-top:8px;">Saved on this toolkit's own server (map-markers/) — visible to everyone using this instance.</div>
+    `;
+    this.renderExistingMarkerList(mapType, areaKey, opts);
+
+    const updatePreview = () => opts.updatePreview && opts.updatePreview();
+    document.getElementById("markerPreviewToggleBtn").addEventListener("click", (e) => {
+      this.state.previewHidden = !this.state.previewHidden;
+      e.target.textContent = this.state.previewHidden ? "Show preview" : "Hide preview";
+      updatePreview();
+    });
+    document.getElementById("markerIconSelect").addEventListener("change", (e) => { form.icon = e.target.value; updatePreview(); });
+    document.getElementById("markerXInput").addEventListener("input", (e) => { form.x = e.target.value; updatePreview(); });
+    document.getElementById("markerYInput").addEventListener("input", (e) => { form.y = e.target.value; updatePreview(); });
+    document.getElementById("markerLabelInput").addEventListener("input", (e) => { form.label = e.target.value; });
+    document.getElementById("markerSubmitBtn").addEventListener("click", () => this.submitManualMarker(mapType, areaKey, opts.onChange));
+    updatePreview();
+  },
+
+  // Split out so adding/deleting a marker can refresh JUST the count +
+  // delete list without re-rendering (and losing focus/state in) the
+  // rest of the form -- fixes a real bug where the "existing markers"
+  // list (the only place to delete one) never updated after Add.
+  renderExistingMarkerList(mapType, areaKey, opts) {
+    const listEl = document.getElementById("markerExistingList");
+    if (!listEl) return;
+    const manual = this.getManualMarkers(mapType, areaKey);
+    const countEl = document.querySelector("#mapAddMarkerPanel > div:first-child span");
+    if (countEl) countEl.textContent = `(${manual.count}/${manual.max})`;
+    const submitBtn = document.getElementById("markerSubmitBtn");
+    if (submitBtn) submitBtn.disabled = manual.count >= manual.max;
+    listEl.innerHTML = manual.entries.length ? `
+      <div style="max-height:160px; overflow-y:auto;">
+        ${manual.entries.map((e) => `
+          <div style="display:flex; align-items:center; gap:6px; padding:3px 0; font-size:11px; color:var(--hud-text-dim);">
+            <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml((MAP_ICON_BY_KEY[e.iconKey] || {}).label || e.iconKey)}${e.label ? " — " + escapeHtml(e.label) : ""}</span>
+            <button class="toggle-btn" data-delete-marker="${escapeHtml(e.id)}" style="padding:1px 7px; font-size:10px;">✕ Remove</button>
+          </div>
+        `).join("")}
+      </div>
+    ` : `<div style="font-size:10.5px; color:var(--hud-text-dim);">No manual markers here yet.</div>`;
+    listEl.querySelectorAll("[data-delete-marker]").forEach((btn) => {
+      btn.addEventListener("click", () => this.deleteManualMarker(mapType, areaKey, btn.dataset.deleteMarker, opts.onChange));
+    });
+  },
+
+  // Live "where will this land" preview: a dashed, semi-transparent
+  // ghost pin at the form's current X/Y, using the form's currently
+  // selected icon -- updates on every icon/X/Y change and on
+  // click-to-set, answering "I don't see anything representing where
+  // the marker will be added" directly rather than making the person
+  // submit blind.
+  updateMarkerPreview(stageEl, w, h) {
+    if (!stageEl) return;
+    stageEl.querySelectorAll(".map-marker-preview").forEach((m) => m.remove());
+    if (this.state.previewHidden) return;
+    const form = this.state.addForm;
+    const x = Number(form.x), y = Number(form.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) return;
+    const st = this.iconVisual(form.icon);
+    const el = document.createElement("div");
+    el.className = "map-marker-preview";
+    const scale = 1 / Math.max(this.state.zoom || 1, 0.4);
+    el.style.cssText = `position:absolute; left:${x * w}px; top:${y * h}px; transform:translate(-50%,-100%) scale(${scale}); z-index:7; opacity:0.6; pointer-events:none;`
+      + `filter:drop-shadow(0 0 4px #40cfd8);`;
+    el.innerHTML = `
+      <div style="display:flex; flex-direction:column; align-items:center;">
+        ${st.icon
+          ? `<img src="${st.icon}" alt="" style="width:26px; height:26px; object-fit:contain;"/>`
+          : `<span style="color:#40cfd8; font-size:18px;">${st.fallback}</span>`}
+        <div style="width:8px; height:8px; margin-top:-4px; border:1px dashed #40cfd8; border-radius:50%;"></div>
+      </div>
+    `;
+    stageEl.appendChild(el);
+  },
+
+
+  // ---------- Shared marker drawing / legend (Field Map + World View) ----------
   waypointKey() {
     return this.state.mode === "world" ? `world:${this.state.worldCode}` : `field:${this.state.areaGateId}`;
+  },
+
+  ensureLayers(mapType) {
+    const defaults = MAP_DEFAULT_LEGEND[mapType] || [];
+    for (const key of defaults) {
+      if (!(key in this.state.layers)) this.state.layers[key] = true;
+    }
   },
 
   renderPieceStageCommon(opts) {
@@ -229,7 +455,7 @@ const WorldMapBrowserView = {
         ${opts.backFn ? `<button class="toggle-btn" id="mapBackBtn">← ${escapeHtml(opts.backLabel || "Back")}</button>` : ""}
         <span style="font-family:var(--font-display); font-size:14px; font-weight:600; color:var(--hud-text);">${escapeHtml(opts.title)}</span>
         <span style="font-size:11px; color:var(--hud-text-dim);">${escapeHtml(opts.subtitle)}</span>
-        <span style="margin-left:auto; font-size:11px; color:var(--hud-text-dim);">drag to pan · wheel to zoom · drag a legend icon onto the map to drop a pin</span>
+        <span style="margin-left:auto; font-size:11px; color:var(--hud-text-dim);">drag to pan · wheel to zoom · click the map to set marker X/Y</span>
       </div>
       ${opts.seamRisk === "high" || opts.seamRisk === "medium" ? `
         <div class="coverage-banner" style="margin-top:0;">
@@ -245,14 +471,10 @@ const WorldMapBrowserView = {
         </div>
         <div>
           <div class="hud-panel" style="padding:12px 14px;">
-            <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--hud-text); margin-bottom:8px;">Legend — click to toggle, drag Waypoints to pin</div>
+            <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--hud-text); margin-bottom:8px;">Legend — click to toggle</div>
             <div id="mapLegend"></div>
-            <div style="font-size:10.5px; color:var(--hud-text-dim); margin-top:10px; line-height:1.6;">
-              Disabled layers have no coordinates anywhere in the export — they'd join this map
-              automatically if positional data ever lands. Waypoint pins are session-only (no
-              backend to save them) and clear on refresh.
-            </div>
           </div>
+          <div class="hud-panel" style="padding:12px 14px; margin-top:12px;" id="mapAddMarkerPanel"></div>
           <div class="hud-panel" style="padding:12px 14px; margin-top:12px;" id="mapSidePanel"></div>
         </div>
       </div>
@@ -283,25 +505,31 @@ const WorldMapBrowserView = {
 
   markerVisual(kind) {
     const icons = this.icons();
-    if (kind === "WT") return { icon: icons.warpTerminal, fallback: "◆", color: "#fff", label: "Warp Terminal" };
-    if (kind === "SA") return { icon: icons.safeArea, fallback: "▲", color: "#fff", label: "Safe Area" };
-    return { icon: null, fallback: "●", color: "var(--hud-text-dim)", label: "Marker" };
+    if (kind === "WT") return { icon: icons.warpTerminal, fallback: "◆", color: "#fff", label: "Warp Terminal", layerKey: "warpTerminal" };
+    if (kind === "SA") return { icon: icons.safeArea, fallback: "▲", color: "#fff", label: "Safe Area", layerKey: "safeArea" };
+    return { icon: null, fallback: "●", color: "var(--hud-text-dim)", label: "Marker", layerKey: null };
+  },
+
+  iconVisual(iconKey) {
+    const icons = this.icons();
+    const meta = MAP_ICON_BY_KEY[iconKey] || { label: iconKey, fallback: "◆" };
+    return { icon: icons[iconKey], fallback: meta.fallback, color: "#fff", label: meta.label, layerKey: iconKey };
   },
 
   drawMarkers(stage, markers, bounds, tpp) {
     stage.querySelectorAll(".map-marker").forEach((m) => m.remove());
     for (const m of markers) {
-      if (!this.state.layers[m.kind === "SA" ? "safeArea" : m.kind === "WT" ? "warpTerminal" : m.kind]) continue;
+      const st = this.markerVisual(m.kind);
+      if (st.layerKey && !this.state.layers[st.layerKey]) continue;
       const x = (m.x - bounds.minX) / tpp;
       const y = (m.y - bounds.minY) / tpp;
-      const st = this.markerVisual(m.kind);
       const el = document.createElement("div");
       el.className = "map-marker";
       const scale = 1 / Math.max(this.state.zoom, 0.4);
       el.style.cssText = `position:absolute; left:${x}px; top:${y}px; transform:translate(-50%,-50%) scale(${scale}); cursor:pointer; z-index:5;`
         + (m.id === this.state.selectedMarkerId ? "filter:drop-shadow(0 0 6px #fff);" : "");
       el.innerHTML = st.icon
-        ? `<img src="${st.icon}" alt="${escapeHtml(st.label)}" style="width:28px; height:28px;"/>`
+        ? `<img src="${st.icon}" alt="${escapeHtml(st.label)}" style="width:28px; height:28px; object-fit:contain;"/>`
         : `<span style="color:${st.color}; font-size:16px; text-shadow:0 0 6px rgba(0,0,0,0.9);">${st.fallback}</span>`;
       el.title = `${st.label}: ${m.id}`;
       el.addEventListener("click", (ev) => {
@@ -312,62 +540,59 @@ const WorldMapBrowserView = {
       });
       stage.appendChild(el);
     }
-    this.drawWaypointPins(stage, bounds, tpp);
   },
 
-  drawWaypointPins(stage, bounds, tpp) {
-    stage.querySelectorAll(".map-waypoint-pin").forEach((m) => m.remove());
-    if (!this.state.layers.waypoint) return;
-    const key = this.waypointKey();
-    const pins = this.state.waypoints[key] || [];
-    const icons = this.icons();
-    for (const pin of pins) {
-      const x = (pin.x - bounds.minX) / tpp;
-      const y = (pin.y - bounds.minY) / tpp;
+  // Manual markers use NORMALIZED 0-1 coordinates against the stage's
+  // own pixel size (wPx/hPx) -- independent of world tpp, which is
+  // what lets the same entry shape work for Field Map/World View
+  // (which have world coords) AND Towns/Dungeons (which never will).
+  drawManualMarkers(stage, mapType, areaKey, wPx, hPx, refreshFn) {
+    stage.querySelectorAll(".map-manual-marker").forEach((m) => m.remove());
+    const manual = this.getManualMarkers(mapType, areaKey);
+    for (const entry of manual.entries) {
+      if (!this.state.layers[entry.iconKey]) continue;
+      const st = this.iconVisual(entry.iconKey);
+      const x = entry.x * wPx, y = entry.y * hPx;
       const el = document.createElement("div");
-      el.className = "map-waypoint-pin";
+      el.className = "map-manual-marker";
       const scale = 1 / Math.max(this.state.zoom, 0.4);
       el.style.cssText = `position:absolute; left:${x}px; top:${y}px; transform:translate(-50%,-100%) scale(${scale}); cursor:pointer; z-index:6;`;
-      el.innerHTML = icons.waypoint
-        ? `<img src="${icons.waypoint}" alt="Waypoint" style="width:26px; height:26px;"/>`
-        : `<span style="color:#FFD54A; font-size:18px;">📍</span>`;
-      el.title = "Waypoint pin (click to remove) — session-only, not saved";
+      el.innerHTML = st.icon
+        ? `<img src="${st.icon}" alt="${escapeHtml(st.label)}" style="width:26px; height:26px; object-fit:contain;"/>`
+        : `<span style="color:#FFD54A; font-size:18px; text-shadow:0 0 6px rgba(0,0,0,0.9);">${st.fallback}</span>`;
+      el.title = `${st.label}${entry.label ? ": " + entry.label : ""} (click to remove)`;
       el.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        this.state.waypoints[key] = pins.filter((p) => p.id !== pin.id);
-        el.remove();
+        if (confirm(`Remove this "${st.label}" marker${entry.label ? ` (${entry.label})` : ""}?`)) {
+          this.deleteManualMarker(mapType, areaKey, entry.id, refreshFn);
+        }
       });
       stage.appendChild(el);
     }
   },
 
-  legendRows(markers, chestCount) {
+  legendRows(mapType, autoMarkers, chestCount, manualEntries) {
     const icons = this.icons();
-    const count = (kind) => markers.filter((m) => m.kind === kind).length;
-    return [
-      { key: "safeArea", label: `Safe Areas (${count("SA")})`, icon: icons.safeArea, fallback: "▲", color: "#fff", enabled: true, draggable: false },
-      { key: "warpTerminal", label: `Warp Terminals (${count("WT")})`, icon: icons.warpTerminal, fallback: "◆", color: "#fff", enabled: true, draggable: false },
-      { key: "treasureChest", label: `Treasure Chests (${chestCount})`, icon: icons.treasureChest, fallback: "▣", color: "#FFD54A", enabled: true, draggable: false,
-        note: "No chest coordinates exist in the export — listed per area (right), not pinned." },
-      { key: "waypoint", label: "Waypoints (drag to pin)", icon: icons.waypoint, fallback: "📍", color: "#FFD54A", enabled: true, draggable: true,
-        note: "Drag this icon onto the map to drop a pin. Session-only — not saved." },
-      { key: "ark", label: "Arks", icon: icons.ark, fallback: "◆", color: "#B47CE5", enabled: false,
-        note: "No Ark coordinates in the export." },
-      { key: "seal", label: "Seals", icon: icons.seal, fallback: "◆", color: "#E5484D", enabled: false,
-        note: "No Seal coordinates in the export." },
-      { key: "magicalSeal", label: "Magical Seals", icon: icons.magicalSeal, fallback: "◆", color: "#FF7AC6", enabled: false,
-        note: "No Magical Seal coordinates in the export." },
-      { key: "sideQuestTrinket", label: "Side Quest Trinkets", icon: icons.sideQuestTrinket, fallback: "◆", color: "#FFD54A", enabled: false,
-        note: "No Side Quest Trinket coordinates in the export." },
-      { key: "boss", label: "Bosses", icon: icons.boss, fallback: "☠", color: "#fff", enabled: false,
-        note: "No boss coordinates in the export — spawn locators live in unexported level actors." },
-      { key: "monsterSpawn", label: "Monster Spawns", icon: icons.monsterSpawn, fallback: "✦", color: "#fff", enabled: false,
-        note: "Socket tables carry spawn logic but no positions (checked DT_SocketPopTable directly)." },
-      { key: "material", label: "Materials", icon: icons.material, fallback: "✿", color: "#fff", enabled: false,
-        note: "Gathering tables (DT_NatureItemGroupDataTable) carry loot logic but no positions." },
-      { key: "missionObjective", label: "Mission Objectives", icon: icons.missionObjective, fallback: "◈", color: "#fff", enabled: false,
-        note: "Quest files carry map display params but no exported objective coordinates." },
-    ];
+    const autoCount = (kind) => autoMarkers.filter((m) => m.kind === kind).length;
+    const manualCountFor = (key) => manualEntries.filter((e) => e.iconKey === key).length;
+    const keys = new Set(MAP_DEFAULT_LEGEND[mapType] || []);
+    for (const e of manualEntries) keys.add(e.iconKey);
+
+    const notes = {
+      safeArea: null, warpTerminal: null,
+      treasureChest: "No chest coordinates exist in the export for Field Map/World View — listed per area instead; here it's whatever's been added manually.",
+    };
+    return [...keys].map((key) => {
+      const meta = MAP_ICON_BY_KEY[key] || { label: key, fallback: "◆" };
+      let count = manualCountFor(key);
+      if (key === "safeArea") count += autoCount("SA");
+      if (key === "warpTerminal") count += autoCount("WT");
+      if (key === "treasureChest" && mapType === "field") count = chestCount;
+      return {
+        key, label: `${meta.label} (${count})`, icon: icons[key], fallback: meta.fallback, color: "#fff",
+        note: notes[key] || null,
+      };
+    });
   },
 
   legendIconHtml(iconUrl, fallback, color) {
@@ -376,69 +601,67 @@ const WorldMapBrowserView = {
       : `<span style="color:${color}; font-size:15px;">${fallback}</span>`;
   },
 
-  setupLegend(ctx) {
+  setupLegend(mapType, ctx) {
     const el = document.getElementById("mapLegend");
-    const rows = this.legendRows(ctx.markers, ctx.chestCount);
+    const manual = this.getManualMarkers(mapType, ctx.areaKey);
+    const rows = this.legendRows(mapType, ctx.markers, ctx.chestCount, manual.entries);
     el.innerHTML = rows.map((r) => `
-      <div class="map-legend-row${r.enabled ? "" : " disabled"}${r.enabled && this.state.layers[r.key] ? " on" : ""}"
-           data-layer="${r.key}" ${r.draggable ? 'draggable="true"' : ""} ${r.note ? `title="${escapeHtml(r.note)}"` : ""}
-           style="display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:5px; margin-bottom:2px;
-                  ${r.enabled ? "cursor:pointer;" : "opacity:0.45; cursor:not-allowed;"}
-                  ${r.enabled && this.state.layers[r.key] ? "background:rgba(64,207,216,0.1); border:1px solid rgba(64,207,216,0.25);" : "border:1px solid transparent;"}">
+      <div class="map-legend-row${this.state.layers[r.key] ? " on" : ""}"
+           data-layer="${r.key}" ${r.note ? `title="${escapeHtml(r.note)}"` : ""}
+           style="display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:5px; margin-bottom:2px; cursor:pointer;
+                  ${this.state.layers[r.key] ? "background:rgba(64,207,216,0.1); border:1px solid rgba(64,207,216,0.25);" : "border:1px solid transparent;"}">
         <span style="width:18px; text-align:center; display:inline-flex; align-items:center; justify-content:center;">${this.legendIconHtml(r.icon, r.fallback, r.color)}</span>
         <span style="font-size:12px; color:var(--hud-text); flex:1;">${escapeHtml(r.label)}</span>
-        ${r.enabled ? `<span style="font-size:10px; color:var(--hud-text-dim);">${this.state.layers[r.key] ? "shown" : "hidden"}</span>` : '<span style="font-size:10px; color:var(--hud-text-dim);">no coords</span>'}
+        <span style="font-size:10px; color:var(--hud-text-dim);">${this.state.layers[r.key] ? "shown" : "hidden"}</span>
       </div>
     `).join("");
-    el.querySelectorAll(".map-legend-row:not(.disabled)").forEach((row) => {
+    el.querySelectorAll(".map-legend-row").forEach((row) => {
       row.addEventListener("click", () => {
         const k = row.dataset.layer;
         this.state.layers[k] = !this.state.layers[k];
-        this.setupLegend(ctx);
-        this.drawMarkers(ctx.stage, ctx.markers, ctx.bounds, ctx.tpp);
+        this.setupLegend(mapType, ctx);
         if (ctx.onLegendChange) ctx.onLegendChange();
       });
     });
-    const waypointRow = el.querySelector('[data-layer="waypoint"]');
-    if (waypointRow) {
-      waypointRow.addEventListener("dragstart", (ev) => {
-        ev.dataTransfer.setData("text/plain", "waypoint");
-      });
-    }
-    const vp = document.getElementById("mapViewport");
-    if (vp) {
-      vp.addEventListener("dragover", (ev) => ev.preventDefault());
-      vp.addEventListener("drop", (ev) => {
-        ev.preventDefault();
-        if (ev.dataTransfer.getData("text/plain") !== "waypoint") return;
-        const stageEl = document.getElementById("mapStage");
-        const rect = stageEl.getBoundingClientRect();
-        const localX = (ev.clientX - rect.left) / this.state.zoom;
-        const localY = (ev.clientY - rect.top) / this.state.zoom;
-        const worldX = ctx.bounds.minX + localX * ctx.tpp;
-        const worldY = ctx.bounds.minY + localY * ctx.tpp;
-        const key = this.waypointKey();
-        if (!this.state.waypoints[key]) this.state.waypoints[key] = [];
-        this.state.waypoints[key].push({ id: `wp_${Date.now()}`, x: worldX, y: worldY });
-        this.drawWaypointPins(ctx.stage, ctx.bounds, ctx.tpp);
-      });
-    }
+  },
+
+  bindMapClickForCoords(mapType, areaKey, wPx, hPx, isWorldSpace, bounds, tpp) {
+    const stage = document.getElementById("mapStage");
+    stage.addEventListener("click", (ev) => {
+      if (this._justPanned) { this._justPanned = false; return; }
+      const rect = stage.getBoundingClientRect();
+      const localX = (ev.clientX - rect.left) / this.state.zoom;
+      const localY = (ev.clientY - rect.top) / this.state.zoom;
+      const nx = Math.min(1, Math.max(0, localX / wPx));
+      const ny = Math.min(1, Math.max(0, localY / hPx));
+      this.state.addForm.x = nx.toFixed(3);
+      this.state.addForm.y = ny.toFixed(3);
+      const xInput = document.getElementById("markerXInput");
+      const yInput = document.getElementById("markerYInput");
+      if (xInput) xInput.value = this.state.addForm.x;
+      if (yInput) yInput.value = this.state.addForm.y;
+      this.updateMarkerPreview(stage, wPx, hPx);
+    });
   },
 
   bindPanZoom(bounds, tpp, wPx, hPx, onZoom) {
     const vp = document.getElementById("mapViewport");
-    let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
     vp.addEventListener("pointerdown", (e) => {
-      dragging = true; sx = e.clientX; sy = e.clientY; ox = this.state.panX; oy = this.state.panY;
+      dragging = true; moved = false; sx = e.clientX; sy = e.clientY; ox = this.state.panX; oy = this.state.panY;
       vp.style.cursor = "grabbing"; vp.setPointerCapture(e.pointerId);
     });
     vp.addEventListener("pointermove", (e) => {
       if (!dragging) return;
+      if (Math.abs(e.clientX - sx) > 3 || Math.abs(e.clientY - sy) > 3) moved = true;
       this.state.panX = ox + (e.clientX - sx);
       this.state.panY = oy + (e.clientY - sy);
       this.applyTransform();
     });
-    vp.addEventListener("pointerup", (e) => { dragging = false; vp.style.cursor = "grab"; vp.releasePointerCapture(e.pointerId); });
+    vp.addEventListener("pointerup", (e) => {
+      dragging = false; vp.style.cursor = "grab"; vp.releasePointerCapture(e.pointerId);
+      if (moved) this._justPanned = true;
+    });
     vp.addEventListener("wheel", (e) => {
       e.preventDefault();
       const rect = vp.getBoundingClientRect();
@@ -458,10 +681,36 @@ const WorldMapBrowserView = {
     if (stage) stage.style.transform = `translate(${this.state.panX}px, ${this.state.panY}px) scale(${this.state.zoom})`;
   },
 
+  fitToViewport(wPx, hPx) {
+    const vp = document.getElementById("mapViewport");
+    const fit = Math.min(vp.clientWidth / wPx, vp.clientHeight / hPx);
+    this.state.zoom = fit;
+    this.state.panX = (vp.clientWidth - wPx * fit) / 2;
+    this.state.panY = (vp.clientHeight - hPx * fit) / 2;
+    this.applyTransform();
+  },
+
+  _redrawSidePanel() {
+    if (this._sidePanelRenderer) this._sidePanelRenderer();
+  },
+
+  markerDetailHtml(sel) {
+    const gate = (DataStore.getAllGatesFlat ? DataStore.getAllGatesFlat() : []).find((g) => g.id === sel.id);
+    const st = this.markerVisual(sel.kind);
+    return `
+      <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--hud-text); margin-bottom:4px;">${escapeHtml(st.label)}</div>
+      <div style="font-size:14px; color:var(--hud-text);">${escapeHtml(gate ? DataStore.getGateDisplayName(gate) : sel.id)}</div>
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--hud-text-dim); margin-bottom:6px;">${escapeHtml(sel.id)} · world (${Math.round(sel.x)}, ${Math.round(sel.y)})</div>
+      <div style="font-size:11px; color:var(--hud-text-dim);">Coordinates from DA_InGame's terminal registry — see World › Gates for the full entry.</div>
+      <hr class="guide-hr" style="margin:10px 0;"/>
+    `;
+  },
+
   // ---------- Field Map: single-area interactive view ----------
-  renderAreaView(container) {
+  async renderAreaView(container) {
     const area = (this.state.data.areas || []).find((a) => a.gateId === this.state.areaGateId);
     if (!area || !area.bounds) { this.state.fieldSub = "overview"; return this.renderOverview(container); }
+    this.ensureLayers("field");
     const tpp = area.texturePerPixel;
     const gate = (DataStore.getAllGatesFlat ? DataStore.getAllGatesFlat() : []).find((g) => g.id === area.gateId);
     const { wrap, wPx, hPx } = this.renderPieceStageCommon({
@@ -473,13 +722,26 @@ const WorldMapBrowserView = {
       seamRisk: area.seamRisk,
     });
     container.appendChild(wrap);
+    await this.loadManualMarkers("field", area.gateId);
     const stage = document.getElementById("mapStage");
+    const redraw = () => {
+      this.drawMarkers(stage, area.markers, area.bounds, tpp);
+      this.drawManualMarkers(stage, "field", area.gateId, wPx, hPx, onMarkerChange);
+      this.updateMarkerPreview(stage, wPx, hPx);
+    };
+    // onChange after add/delete must refresh BOTH the map pins AND the
+    // Add-Marker panel's own count/delete-list -- fixes a real bug
+    // where the delete list never updated after adding a marker.
+    const onMarkerChange = () => { redraw(); this.renderExistingMarkerList("field", area.gateId, markerOpts); };
+    const markerOpts = { onChange: onMarkerChange, updatePreview: () => this.updateMarkerPreview(stage, wPx, hPx) };
     this.drawPieces(stage, area.pieces, area.bounds, tpp, area.seamRisk);
-    this.drawMarkers(stage, area.markers, area.bounds, tpp);
-    this.setupLegend({ stage, markers: area.markers, bounds: area.bounds, tpp, chestCount: area.chestIds.length });
+    redraw();
+    this.setupLegend("field", { areaKey: area.gateId, markers: area.markers, chestCount: area.chestIds.length, onLegendChange: redraw });
+    this.renderAddMarkerPanel("field", area.gateId, markerOpts);
     this._sidePanelRenderer = () => this.renderAreaSidePanel(area);
     this._sidePanelRenderer();
-    this.bindPanZoom(area.bounds, tpp, wPx, hPx, () => this.drawMarkers(stage, area.markers, area.bounds, tpp));
+    this.bindPanZoom(area.bounds, tpp, wPx, hPx, redraw);
+    this.bindMapClickForCoords("field", area.gateId, wPx, hPx, true, area.bounds, tpp);
     this.fitToViewport(wPx, hPx);
   },
 
@@ -488,51 +750,66 @@ const WorldMapBrowserView = {
     const sel = area.markers.find((m) => m.id === this.state.selectedMarkerId);
     let html = "";
     if (sel) html += this.markerDetailHtml(sel);
-    if (this.state.layers.treasureChest && area.chestIds.length) {
+    // Backward-compatible: area.chests (chestId + resolved contents)
+    // is the current shape, but falls back to the older area.chestIds
+    // (bare id strings, no contents) if this instance's WorldMap.json
+    // predates that field -- a real regression found and fixed here:
+    // the section used to check area.chestIds.length, so it always
+    // showed SOMETHING even on stale data; switching to area.chests
+    // with no fallback made the whole section silently vanish on any
+    // build that hadn't re-run world_map yet, which read as "the
+    // chest list disappeared" rather than "needs a rebuild".
+    const hasRichChests = Array.isArray(area.chests);
+    const chestCount = hasRichChests ? area.chests.length : (area.chestIds || []).length;
+    if (this.state.layers.treasureChest && chestCount) {
       html += `
-        <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:#FFD54A; margin-bottom:4px;">Treasure Chests here (${area.chestIds.length})</div>
-        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:6px;">Attached by the location join — no chest coordinates exist in the export, so these are a list, not pins. Contents in Items › Chests.</div>
-        <div style="max-height:170px; overflow-y:auto;">
-          ${area.chestIds.map((c) => `<div style="font-family:var(--font-mono); font-size:11px; line-height:1.8; color:var(--hud-text);">▣ ${escapeHtml(c)}</div>`).join("")}
+        <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:#FFD54A; margin-bottom:4px;">Treasure Chests here (${chestCount})</div>
+        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:6px;">Attached by the location join — no chest coordinates exist in the export, so these are a list, not pins. Full item stats in Items › Chests.</div>
+        ${!hasRichChests ? `<div style="font-size:10px; color:var(--hud-sp); margin-bottom:6px;">Contents unavailable — this instance's World Map data predates chest-contents support. Re-run the World focus build to see items here.</div>` : ""}
+        <div style="max-height:280px; overflow-y:auto;">
+          ${hasRichChests
+            ? area.chests.map((c) => this.renderChestContentsHtml(c)).join("")
+            : area.chestIds.map((cid) => `<div style="font-family:var(--font-mono); font-size:11px; line-height:1.8; color:var(--hud-text);">▣ ${escapeHtml(cid)}</div>`).join("")}
         </div>
       `;
     }
     el.innerHTML = html || '<div style="font-size:12px; color:var(--hud-text-dim);">Click a marker for details.</div>';
   },
 
-  markerDetailHtml(sel) {
-    const gate = (DataStore.getAllGatesFlat ? DataStore.getAllGatesFlat() : []).find((g) => g.id === sel.id);
-    const st = this.markerVisual(sel.kind);
+  // Shows each chest's actual RESOLVED contents (item icon + name +
+  // weight-derived share), not just the bare chest ID -- the ID alone
+  // required a trip to Items > Chests to find out what's actually
+  // inside, which defeated the point of surfacing chests on the map
+  // in the first place.
+  renderChestContentsHtml(chest) {
+    const contents = chest.contents || [];
     return `
-      <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:${st.color === "#fff" ? "var(--hud-text)" : st.color}; margin-bottom:4px;">${escapeHtml(st.label)}</div>
-      <div style="font-size:14px; color:var(--hud-text);">${escapeHtml(gate ? DataStore.getGateDisplayName(gate) : sel.id)}</div>
-      <div style="font-family:var(--font-mono); font-size:11px; color:var(--hud-text-dim); margin-bottom:6px;">${escapeHtml(sel.id)} · world (${Math.round(sel.x)}, ${Math.round(sel.y)})</div>
-      <div style="font-size:11px; color:var(--hud-text-dim);">Coordinates from DA_InGame's terminal registry — see World › Gates for the full entry.</div>
-      <hr class="guide-hr" style="margin:10px 0;"/>
+      <div style="margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(135,200,210,0.1);">
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--db-cyan-bright); margin-bottom:3px;">▣ ${escapeHtml(chest.chestId)}</div>
+        ${contents.length ? contents.map((slot) => {
+          const name = DataStore.getChestItemName ? DataStore.getChestItemName(slot.itemKey) : slot.itemKey;
+          const icon = DataStore.getItemIconPath ? DataStore.getItemIconPath(slot.itemKey) : null;
+          return `
+            <div style="display:flex; align-items:center; gap:6px; padding:1px 0 1px 10px; font-size:11px; color:var(--hud-text);">
+              ${icon ? `<img src="${icon}" alt="" style="width:16px; height:16px; object-fit:contain; flex-shrink:0;"/>` : '<span style="width:16px; flex-shrink:0;"></span>'}
+              <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}${slot.num > 1 ? ` ×${slot.num}` : ""}</span>
+              ${slot.sharePct != null ? `<span style="font-size:9.5px; color:var(--hud-text-dim); flex-shrink:0;">${slot.sharePct}%</span>` : ""}
+            </div>
+          `;
+        }).join("") : '<div style="font-size:10.5px; color:var(--hud-text-dim); padding-left:10px;">No resolved contents.</div>'}
+      </div>
     `;
   },
 
-  _redrawSidePanel() {
-    if (this._sidePanelRenderer) this._sidePanelRenderer();
-  },
-
-  fitToViewport(wPx, hPx) {
-    const vp = document.getElementById("mapViewport");
-    const fit = Math.min(vp.clientWidth / wPx, vp.clientHeight / hPx);
-    this.state.zoom = fit;
-    this.state.panX = (vp.clientWidth - wPx * fit) / 2;
-    this.state.panY = (vp.clientHeight - hPx * fit) / 2;
-    this.applyTransform();
-  },
-
   // ---------- World View: all textured areas composited on one canvas ----------
-  renderWorldView(container) {
+  async renderWorldView(container) {
     const composites = this.state.data.worldComposites || {};
     const codes = Object.keys(composites);
     if (!codes.length) {
       container.innerHTML = `<div class="hud-panel"><div class="empty-state"><p>No world composite available yet — needs at least one area with exported map textures.</p></div></div>`;
       return;
     }
+    this.ensureLayers("world");
     if (!this.state.worldCode || !composites[this.state.worldCode]) this.state.worldCode = codes[0];
     const wc = composites[this.state.worldCode];
     const { wrap, wPx, hPx } = this.renderPieceStageCommon({
@@ -553,10 +830,19 @@ const WorldMapBrowserView = {
         this.renderModeBody();
       });
     }
+    await this.loadManualMarkers("world", wc.world);
     const stage = document.getElementById("mapStage");
+    const redraw = () => {
+      this.drawMarkers(stage, wc.markers, wc.bounds, wc.texturePerPixel);
+      this.drawManualMarkers(stage, "world", wc.world, wPx, hPx, onMarkerChange);
+      this.updateMarkerPreview(stage, wPx, hPx);
+    };
+    const onMarkerChange = () => { redraw(); this.renderExistingMarkerList("world", wc.world, markerOpts); };
+    const markerOpts = { onChange: onMarkerChange, updatePreview: () => this.updateMarkerPreview(stage, wPx, hPx) };
     this.drawPieces(stage, wc.pieces, wc.bounds, wc.texturePerPixel, "low");
-    this.drawMarkers(stage, wc.markers, wc.bounds, wc.texturePerPixel);
-    this.setupLegend({ stage, markers: wc.markers, bounds: wc.bounds, tpp: wc.texturePerPixel, chestCount: 0 });
+    redraw();
+    this.setupLegend("world", { areaKey: wc.world, markers: wc.markers, chestCount: 0, onLegendChange: redraw });
+    this.renderAddMarkerPanel("world", wc.world, markerOpts);
     this._sidePanelRenderer = () => {
       const el = document.getElementById("mapSidePanel");
       const sel = wc.markers.find((m) => m.id === this.state.selectedMarkerId);
@@ -568,11 +854,91 @@ const WorldMapBrowserView = {
         </div>`;
     };
     this._sidePanelRenderer();
-    this.bindPanZoom(wc.bounds, wc.texturePerPixel, wPx, hPx, () => this.drawMarkers(stage, wc.markers, wc.bounds, wc.texturePerPixel));
+    this.bindPanZoom(wc.bounds, wc.texturePerPixel, wPx, hPx, redraw);
+    this.bindMapClickForCoords("world", wc.world, wPx, hPx, true, wc.bounds, wc.texturePerPixel);
     this.fitToViewport(wPx, hPx);
   },
 
-  // ---------- Towns: single reference images ----------
+  // ---------- Shared: an interactive image-overlay stage for Towns/Dungeons
+  // (plain images, no pan/zoom needed -- just normalized-coordinate
+  // markers directly over the <img>, since these have no world-space
+  // piece math to speak of). ----------
+  renderImageMarkerStage(imageUrl, mapType, areaKey, altText) {
+    return `
+      <div class="equip-layout side-right" style="--side-col: 300px;">
+        <div class="hud-panel" style="padding:8px; text-align:center;">
+          <div id="imgMarkerStage" style="position:relative; display:inline-block; max-width:100%; cursor:crosshair;">
+            <img id="imgMarkerImg" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(altText)}" style="max-width:100%; display:block; border:1px solid var(--hud-border); border-radius:8px;"/>
+          </div>
+          <div style="font-size:10.5px; color:var(--hud-text-dim); margin-top:6px;">Click the image to set marker X/Y, then use the form to add it.</div>
+        </div>
+        <div>
+          <div class="hud-panel" style="padding:12px 14px;">
+            <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--hud-text); margin-bottom:8px;">Legend — click to toggle</div>
+            <div id="mapLegend"></div>
+          </div>
+          <div class="hud-panel" style="padding:12px 14px; margin-top:12px;" id="mapAddMarkerPanel"></div>
+        </div>
+      </div>
+    `;
+  },
+
+  async setupImageMarkerStage(mapType, areaKey) {
+    this.ensureLayers(mapType);
+    await this.loadManualMarkers(mapType, areaKey);
+    const stageEl = document.getElementById("imgMarkerStage");
+    const imgEl = document.getElementById("imgMarkerImg");
+
+    const redraw = () => {
+      stageEl.querySelectorAll(".map-manual-marker").forEach((m) => m.remove());
+      const manual = this.getManualMarkers(mapType, areaKey);
+      const w = imgEl.clientWidth, h = imgEl.clientHeight;
+      for (const entry of manual.entries) {
+        if (!this.state.layers[entry.iconKey]) continue;
+        const st = this.iconVisual(entry.iconKey);
+        const el = document.createElement("div");
+        el.className = "map-manual-marker";
+        el.style.cssText = `position:absolute; left:${entry.x * w}px; top:${entry.y * h}px; transform:translate(-50%,-100%); cursor:pointer; z-index:6;`;
+        el.innerHTML = st.icon
+          ? `<img src="${st.icon}" alt="${escapeHtml(st.label)}" style="width:26px; height:26px; object-fit:contain;"/>`
+          : `<span style="color:#FFD54A; font-size:18px; text-shadow:0 0 6px rgba(0,0,0,0.9);">${st.fallback}</span>`;
+        el.title = `${st.label}${entry.label ? ": " + entry.label : ""} (click to remove)`;
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (confirm(`Remove this "${st.label}" marker${entry.label ? ` (${entry.label})` : ""}?`)) {
+            this.deleteManualMarker(mapType, areaKey, entry.id, onMarkerChange);
+          }
+        });
+        stageEl.appendChild(el);
+      }
+    };
+
+    const updatePreview = () => this.updateMarkerPreview(stageEl, imgEl.clientWidth, imgEl.clientHeight);
+    const onMarkerChange = () => { redraw(); updatePreview(); this.renderExistingMarkerList(mapType, areaKey, markerOpts); };
+    const markerOpts = { onChange: onMarkerChange, updatePreview };
+
+    const onImgReady = () => {
+      redraw();
+      this.setupLegend(mapType, { areaKey, markers: [], chestCount: 0, onLegendChange: redraw });
+      this.renderAddMarkerPanel(mapType, areaKey, markerOpts);
+      stageEl.addEventListener("click", (ev) => {
+        if (ev.target.closest(".map-manual-marker")) return;
+        const rect = imgEl.getBoundingClientRect();
+        const nx = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+        const ny = Math.min(1, Math.max(0, (ev.clientY - rect.top) / rect.height));
+        this.state.addForm.x = nx.toFixed(3);
+        this.state.addForm.y = ny.toFixed(3);
+        const xInput = document.getElementById("markerXInput");
+        const yInput = document.getElementById("markerYInput");
+        if (xInput) xInput.value = this.state.addForm.x;
+        if (yInput) yInput.value = this.state.addForm.y;
+        updatePreview();
+      });
+    };
+    if (imgEl.complete) onImgReady(); else imgEl.addEventListener("load", onImgReady);
+  },
+
+  // ---------- Towns: single reference image + manual marker overlay ----------
   renderTownsView(container) {
     const towns = this.state.staticMaps.towns || [];
     if (!this.state.townCode && towns.length) this.state.townCode = towns[0].townCode;
@@ -581,40 +947,30 @@ const WorldMapBrowserView = {
     wrap.innerHTML = `
       <div class="coverage-banner">
         <span><b>${towns.length}</b> town(s) with an exported map image</span>
-        <span style="margin-left:auto; opacity:0.6;" title="No coordinate data anywhere in this export is confirmed to be scaled to a town map image's own local space — these browse as reference images, not interactive marker maps.">reference image — no marker overlay</span>
+        <span style="margin-left:auto; opacity:0.6;" title="No coordinate data anywhere in this export is confirmed to be scaled to a town map image's own local space — markers here are entirely manual, added via the form to the right.">manual markers only</span>
       </div>
-      <div class="equip-layout two-col" style="--list-col: 220px;">
-        <div id="townListPane"></div>
-        <div class="hud-panel" style="padding:14px; text-align:center;" id="townImagePane"></div>
-      </div>
+      <div class="toolbar" id="townSelectToolbar"></div>
+      <div id="townBody"></div>
     `;
     container.appendChild(wrap);
-    const listPane = document.getElementById("townListPane");
-    listPane.innerHTML = towns.map((t) => `
-      <div class="weapon-list-row${t.townCode === this.state.townCode ? " selected" : ""}" data-town="${escapeHtml(t.townCode)}">
-        <div style="flex:1; min-width:0;"><div class="wl-name">${escapeHtml(t.townCode)}</div><div class="wl-id">${t.images.length} image(s)</div></div>
-      </div>
-    `).join("");
-    listPane.querySelectorAll("[data-town]").forEach((row) => {
-      row.addEventListener("click", () => { this.state.townCode = row.dataset.town; this.renderModeBody(); });
+    const toolbar = document.getElementById("townSelectToolbar");
+    toolbar.innerHTML = towns.map((t) =>
+      `<button class="toggle-btn${t.townCode === this.state.townCode ? " active" : ""}" data-town="${escapeHtml(t.townCode)}">${escapeHtml(t.townCode)}</button>`
+    ).join("");
+    toolbar.querySelectorAll("[data-town]").forEach((btn) => {
+      btn.addEventListener("click", () => { this.state.townCode = btn.dataset.town; this.renderModeBody(); });
     });
-    const imgPane = document.getElementById("townImagePane");
-    if (town) {
-      imgPane.innerHTML = `
-        <div style="font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:10px;">${escapeHtml(town.townCode)}</div>
-        ${town.images.map((im) => `
-          <div style="margin-bottom:14px;">
-            <div style="font-size:11px; color:var(--hud-text-dim); margin-bottom:4px;">${escapeHtml(im.variant)}</div>
-            <img src="${escapeHtml(im.image)}" alt="${escapeHtml(town.townCode)} ${escapeHtml(im.variant)}" style="max-width:100%; border:1px solid var(--hud-border); border-radius:8px;"/>
-          </div>
-        `).join("")}
-      `;
-    } else {
-      imgPane.innerHTML = `<div class="empty-state"><p>No town maps exported yet.</p></div>`;
+    const body = document.getElementById("townBody");
+    if (!town) {
+      body.innerHTML = `<div class="hud-panel"><div class="empty-state"><p>No town maps exported yet.</p></div></div>`;
+      return;
     }
+    const mainImage = town.images.find((im) => im.variant === "full") || town.images[0];
+    body.innerHTML = this.renderImageMarkerStage(mainImage.image, "town", town.townCode, `${town.townCode} map`);
+    this.setupImageMarkerStage("town", town.townCode);
   },
 
-  // ---------- Dungeons: single reference images per floor ----------
+  // ---------- Dungeons: single reference image per floor + manual marker overlay ----------
   renderDungeonsView(container) {
     const floors = this.state.staticMaps.dungeonFloors || [];
     if (!this.state.dungeonSuffix && floors.length) this.state.dungeonSuffix = floors[0].suffix;
@@ -623,11 +979,11 @@ const WorldMapBrowserView = {
     wrap.innerHTML = `
       <div class="coverage-banner">
         <span><b>${floors.length}</b> dungeon floor image(s) exported</span>
-        <span style="margin-left:auto; opacity:0.6;" title="Floor suffixes (e.g. HTE1, NTR2) are NOT confirmed to map 1:1 onto a specific named dungeon in World > Dungeons — several dungeons share the same 3-letter prefix, so each floor is labeled honestly by its raw exported name rather than guessed.">dungeon name attribution unconfirmed</span>
+        <span style="margin-left:auto; opacity:0.6;" title="Floor suffixes (e.g. HTE1, NTR2) are NOT confirmed to map 1:1 onto a specific named dungeon in World > Dungeons — several dungeons share the same 3-letter prefix, so each floor is labeled honestly by its raw exported name rather than guessed. Markers here are entirely manual.">dungeon name attribution unconfirmed</span>
       </div>
       <div class="equip-layout two-col" style="--list-col: 220px;">
         <div id="dungeonListPane"></div>
-        <div class="hud-panel" style="padding:14px; text-align:center;" id="dungeonImagePane"></div>
+        <div id="dungeonBody"></div>
       </div>
     `;
     container.appendChild(wrap);
@@ -640,19 +996,12 @@ const WorldMapBrowserView = {
     listPane.querySelectorAll("[data-floor]").forEach((row) => {
       row.addEventListener("click", () => { this.state.dungeonSuffix = row.dataset.floor; this.renderModeBody(); });
     });
-    const imgPane = document.getElementById("dungeonImagePane");
-    if (floor) {
-      imgPane.innerHTML = `
-        <div style="font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:10px;">${escapeHtml(floor.suffix)}</div>
-        <img src="${escapeHtml(floor.image)}" alt="${escapeHtml(floor.suffix)}" style="max-width:100%; border:1px solid var(--hud-border); border-radius:8px; background:rgba(0,0,0,0.3);"/>
-        <div style="font-size:11px; color:var(--hud-text-dim); margin-top:10px;">
-          Prefix "${escapeHtml(floor.prefix)}" matches several dungeons in World › Dungeons that share
-          this 3-letter code — which specific one this floor belongs to is not confirmed by any field
-          in the export, so it's labeled by its raw exported name only.
-        </div>
-      `;
-    } else {
-      imgPane.innerHTML = `<div class="empty-state"><p>No dungeon floor maps exported yet.</p></div>`;
+    const body = document.getElementById("dungeonBody");
+    if (!floor) {
+      body.innerHTML = `<div class="hud-panel"><div class="empty-state"><p>No dungeon floor maps exported yet.</p></div></div>`;
+      return;
     }
+    body.innerHTML = this.renderImageMarkerStage(floor.image, "dungeon", floor.suffix, floor.suffix);
+    this.setupImageMarkerStage("dungeon", floor.suffix);
   },
 };

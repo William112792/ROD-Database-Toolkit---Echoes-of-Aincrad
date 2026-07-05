@@ -257,6 +257,50 @@ const CoverageReportView = {
       </div>
 
       <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>Item Sources &amp; Crafting Coverage (Weapon/Armor/Item preview panels)</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          Every Weapon, Armor, and Item (Consumable/Material/Key Item) preview panel now
+          carries a "Sources &amp; Crafting" section, built by combining four sections that
+          already existed — Recipes, Chests, Monsters &gt; Drops, and Shops — into ONE
+          per-item cross-reference, computed server-side in a single pass rather than re-scanned
+          client-side on every render. For a given item it can show: the recipe that crafts it
+          (cost, materials), which shop sells that recipe, every chest the recipe (or the item
+          itself) is found in with its location, every monster whose drop pool includes it, and
+          what OTHER recipes consume it as a crafting material.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>${(DataStore.itemSourcesIndex && DataStore.itemSourcesIndex.withAnySource) || 0}</b> of
+          ${(DataStore.itemSourcesIndex && DataStore.itemSourcesIndex.itemCount) || 0} items have at least one
+          known source; <b>${(DataStore.itemSourcesIndex && DataStore.itemSourcesIndex.withNoKnownSource) || 0}</b>
+          have none found in this export — shown as an explicit statement on that item's own
+          panel ("no recipe, chest, or monster-drop source found"), not a silently empty
+          section, since an item with no reachable source might come from a quest reward or an
+          unexported system rather than being a data gap. This cross-reference can only be as
+          complete as the sections feeding it — Cost/Col/Invalid item-lot slots that Chests and
+          Drops already couldn't resolve stay unresolved here too, honestly, rather than papered
+          over.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.itemSourcesIndex && DataStore.itemSourcesIndex.withRecipe) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">items with a known recipe</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:#FFD54A;">${(DataStore.itemSourcesIndex && DataStore.itemSourcesIndex.withChestSource) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">items with a chest source</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--rank-a);">${(DataStore.itemSourcesIndex && DataStore.itemSourcesIndex.withMonsterDropSource) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">items with a monster-drop source</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-text-dim);">${(DataStore.itemSourcesIndex && DataStore.itemSourcesIndex.withNoKnownSource) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with no known source</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
         <h3>Shop &amp; Chest Coverage</h3>
         <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
           <b>Shops sell recipes — confirmed, not inferred.</b> Every stock entry in
@@ -589,20 +633,31 @@ const CoverageReportView = {
           depth, red → a flat fill) into explicit user-confirmed colors (Safe Areas/Warp
           Terminals white; Treasure Chests, Waypoints, Side Quest Trinkets yellow; Arks purple;
           Seals red; Magical Seals pink; town Smithy green, Chest teal, Item Seller orange) —
-          white, stated as unconfirmed rather than guessed, for the four layers with no
-          assigned color yet (Bosses, Monster Spawns, Materials, Mission Objectives).
+          white, stated as unconfirmed rather than guessed, for the ten layers with no
+          assigned color yet (Town, Dungeon, Search Terminal, Door, Bosses, Elite Monster,
+          Monster Spawns, Materials, Mission Objectives, Player). 26 icons total, including 6
+          Waypoint pin graphics (the classic pin plus 5 "instant pin" skins).
         </p>
         <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
           <b>World View</b> plots every textured area's pieces on ONE shared canvas at their
           real, absolute world coordinates — no new data needed, just wider bounds than any
           single area's own, answering "one continuous map" without per-area navigation.
           <b>Towns and Dungeons</b> use a completely different, simpler asset (single
-          pre-composited images, not pieced tiles) and browse as reference images only — no
-          coordinate data anywhere in this export is confirmed to be scaled to a town or
-          dungeon-floor image's own local space, so no marker overlay is attempted for them.
-          Dungeon floor image suffixes (e.g. "HTE1") are NOT confirmed to map onto one specific
-          named dungeon in World › Dungeons (several share the same 3-letter prefix) and are
-          labeled by their raw exported name rather than guessed.
+          pre-composited images, not pieced tiles) with NO automatic coordinate data anywhere
+          in the export confirmed to be scaled to their local image space. Dungeon floor image
+          suffixes (e.g. "HTE1") are NOT confirmed to map onto one specific named dungeon in
+          World › Dungeons (several share the same 3-letter prefix) and are labeled by their
+          raw exported name rather than guessed.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Manual markers</b> (new): since most icon types and ALL of Towns/Dungeons have no
+          exported coordinates, a small user-content system — outside the pipeline, like
+          Modding Guides — lets anyone using this toolkit instance place a pin on any of the
+          four map surfaces via a form (pick an icon, enter normalized X/Y between 0 and 1,
+          optional label, submit). Stored server-side in <code>map-markers/*.json</code> at the
+          project root, one manifest per surface, capped at 999 entries each. This is how Towns
+          and Dungeons get a real legend at all — every entry is explicitly a human placement,
+          never inferred from data that doesn't exist.
         </p>
         <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
           <div>

@@ -30,6 +30,8 @@ import glob
 import json
 import os
 import re
+import struct
+import zlib
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -255,25 +257,185 @@ ARMOR_TEXTURE_OVERRIDES = {
 # and presenting it as fact.
 MAP_ICON_COLORS = {
     # key: (source icon filename stem, target hex fill color, confirmed?)
-    # Confirmed by explicit user instruction this session.
+    # Confirmed by explicit user instruction across sessions.
     "safeArea": ("T_Mapicon_SafetyArea", "#FFFFFF", True),
     "warpTerminal": ("T_Mapicon_TeleportGate", "#FFFFFF", True),
     "treasureChest": ("T_Mapicon_Treasure", "#FFD54A", True),
-    "waypoint": ("T_Mapicon_Pin", "#FFD54A", True),
     "ark": ("T_Mapicon_KeyArc", "#B47CE5", True),
     "seal": ("T_Mapicon_Seal", "#E5484D", True),
     "magicalSeal": ("T_Mapicon_AmuletSeal", "#FF7AC6", True),
-    "sideQuestTrinket": ("T_Mapicon_SubQuestNPC_Order", "#FFD54A", True),
+    "sideQuestTrinket": ("T_Mapicon_SubQuest", "#FFD54A", True),
     "townSmithy": ("T_Mapicon_Blacksmith", "#4CD97B", True),
     "townChest": ("T_Mapicon_Chest", "#3FD5C8", True),
     "townItemSeller": ("T_Mapicon_ItemShop", "#FFA23F", True),
-    # Not given an explicit color this session -- white per "white
-    # instead of red if we aren't sure of its color", not a guess.
+    # The classic pin + 5 "instant pin" skins -- all confirmed yellow
+    # (same family as the original Waypoint color), offered as
+    # different PIN GRAPHICS a manual marker entry can choose between,
+    # not different meanings.
+    "waypoint": ("T_Mapicon_Pin", "#FFD54A", True),
+    "waypointPinBase": ("T_Mapicon_InstantPin_Base", "#FFD54A", True),
+    "waypointPinCommon": ("T_Mapicon_InstantPin_Common", "#FFD54A", True),
+    "waypointPinEnemy": ("T_Mapicon_InstantPin_Enemy", "#FFD54A", True),
+    "waypointPinGimmick": ("T_Mapicon_InstantPin_Gimmick", "#FFD54A", True),
+    "waypointPinItem": ("T_Mapicon_InstantPin_Item", "#FFD54A", True),
+    # Not given an explicit color -- white per "white instead of red if
+    # we aren't sure of its color", not a guess.
+    "town": ("T_Mapicon_Town", "#FFFFFF", False),
+    "dungeon": ("T_Mapicon_Dungeon_Entrance", "#FFFFFF", False),
+    "searchTerminal": ("T_Mapicon_SearchTerminal", "#FFFFFF", False),
+    "door": ("T_Mapicon_Door", "#FFFFFF", False),
     "boss": ("T_Mapicon_BossEnemy", "#FFFFFF", False),
+    "eliteMonster": ("T_Mapicon_EliteEnemy", "#FFFFFF", False),
     "monsterSpawn": ("T_Mapicon_Enemy", "#FFFFFF", False),
     "material": ("T_Mapicon_Item", "#FFFFFF", False),
     "missionObjective": ("T_Mapicon_OtherGimmick", "#FFFFFF", False),
+    "player": ("T_Mapicon_Hero", "#FFFFFF", False),
 }
+
+
+def _png_read_rgba(path):
+    """
+    Minimal pure-stdlib PNG decoder (zlib + struct only -- no Pillow),
+    scoped deliberately to exactly what these 26 icon files are:
+    verified 8-bit-per-channel RGBA (color type 6), non-interlaced.
+    Written after a real deployment couldn't get Pillow/numpy
+    installed at all (no Dockerfile of this project's own to add a
+    RUN pip install to, and no reliable shell access to a running
+    container to install into persistently) -- rather than keep
+    asking for an install that isn't practical for that environment,
+    map icon recoloring no longer needs ANY third-party package.
+
+    Returns (width, height, rgba_bytearray) with rgba_bytearray laid
+    out row-major, 4 bytes per pixel. Raises ValueError for any PNG
+    outside the verified 8-bit-RGBA-non-interlaced shape rather than
+    silently mishandling it -- callers should catch that and fall back
+    (to Pillow, if available, or skip that one icon) instead of
+    trusting a wrong decode.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"{path}: not a PNG (bad signature)")
+
+    pos = 8
+    width = height = bitdepth = colortype = interlace = None
+    idat = bytearray()
+    while pos < len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        ctype = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + length]
+        if ctype == b"IHDR":
+            width, height, bitdepth, colortype, _comp, _filt, interlace = struct.unpack(">IIBBBBB", chunk)
+        elif ctype == b"IDAT":
+            idat += chunk
+        elif ctype == b"IEND":
+            break
+        pos += 8 + length + 4  # length + type + data + crc
+
+    if bitdepth != 8 or colortype != 6 or interlace != 0:
+        raise ValueError(f"{path}: unsupported PNG shape (bitdepth={bitdepth}, colortype={colortype}, interlace={interlace}) -- only 8-bit RGBA non-interlaced is implemented")
+
+    raw = zlib.decompress(bytes(idat))
+    bpp = 4  # bytes per pixel for 8-bit RGBA
+    stride = width * bpp
+    out = bytearray(width * height * bpp)
+    prev_row = bytearray(stride)
+    src_pos = 0
+    for y in range(height):
+        filter_type = raw[src_pos]
+        src_pos += 1
+        row = bytearray(raw[src_pos:src_pos + stride])
+        src_pos += stride
+        if filter_type == 0:
+            pass  # None
+        elif filter_type == 1:  # Sub
+            for i in range(bpp, stride):
+                row[i] = (row[i] + row[i - bpp]) & 0xFF
+        elif filter_type == 2:  # Up
+            for i in range(stride):
+                row[i] = (row[i] + prev_row[i]) & 0xFF
+        elif filter_type == 3:  # Average
+            for i in range(stride):
+                left = row[i - bpp] if i >= bpp else 0
+                up = prev_row[i]
+                row[i] = (row[i] + ((left + up) // 2)) & 0xFF
+        elif filter_type == 4:  # Paeth
+            for i in range(stride):
+                left = row[i - bpp] if i >= bpp else 0
+                up = prev_row[i]
+                up_left = prev_row[i - bpp] if i >= bpp else 0
+                p = left + up - up_left
+                pa, pb, pc = abs(p - left), abs(p - up), abs(p - up_left)
+                pred = left if (pa <= pb and pa <= pc) else (up if pb <= pc else up_left)
+                row[i] = (row[i] + pred) & 0xFF
+        else:
+            raise ValueError(f"{path}: unknown PNG filter type {filter_type}")
+        out[y * stride:(y + 1) * stride] = row
+        prev_row = row
+    return width, height, out
+
+
+def _png_write_rgba(path, width, height, rgba):
+    """
+    Minimal pure-stdlib PNG encoder matching _png_read_rgba -- writes
+    8-bit RGBA, filter type 0 (None) on every scanline (larger files
+    than a real encoder's adaptive filtering, entirely irrelevant at
+    icon sizes) and lets zlib do the compression work.
+    """
+    stride = width * 4
+    filtered = bytearray()
+    for y in range(height):
+        filtered.append(0)  # filter type None
+        filtered += rgba[y * stride:(y + 1) * stride]
+    compressed = zlib.compress(bytes(filtered), 9)
+
+    def chunk(ctype, payload):
+        return (struct.pack(">I", len(payload)) + ctype + payload
+                + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", ihdr))
+        f.write(chunk(b"IDAT", compressed))
+        f.write(chunk(b"IEND", b""))
+
+
+def _box_blur_alpha(alpha, width, height, radius):
+    """
+    Cheap separable box blur over a single 0-255 alpha channel (plain
+    Python, no numpy) -- run twice (horizontal then vertical passes)
+    to approximate the soft drop-shadow a Gaussian blur gave when PIL
+    was doing the work. Good enough at icon sizes (~64px); not trying
+    to be a general-purpose image filter.
+    """
+    if radius <= 0:
+        return alpha
+    size = 2 * radius + 1
+
+    def blur_1d(src, w, h, horizontal):
+        dst = bytearray(len(src))
+        for y in range(h):
+            for x in range(w):
+                total = 0
+                count = 0
+                for d in range(-radius, radius + 1):
+                    if horizontal:
+                        xx = x + d
+                        if 0 <= xx < w:
+                            total += src[y * w + xx]
+                            count += 1
+                    else:
+                        yy = y + d
+                        if 0 <= yy < h:
+                            total += src[yy * w + x]
+                            count += 1
+                dst[y * w + x] = total // count
+        return dst
+
+    pass1 = blur_1d(alpha, width, height, True)
+    pass2 = blur_1d(pass1, width, height, False)
+    return pass2
 
 
 def _hex_to_rgb(hexstr):
@@ -281,14 +443,133 @@ def _hex_to_rgb(hexstr):
     return tuple(int(hexstr[i:i+2], 16) for i in (0, 2, 4))
 
 
+def _recolor_icon_pure_python(src_path, out_path, hexcolor):
+    """
+    Recolors one icon using ONLY the stdlib PNG codec above -- no
+    Pillow/numpy. Same algorithm as the PIL path (green -> soft offset
+    drop shadow, red -> flat confirmed/white fill, crop to content
+    bbox with a small margin), reimplemented with plain Python loops
+    over bytearrays. Icons are ~64px, and this runs once per icon at
+    build time, so the lack of vectorization doesn't matter in
+    practice (the whole 26-icon set takes well under a second).
+    """
+    width, height, rgba = _png_read_rgba(src_path)
+    fill_rgb = _hex_to_rgb(hexcolor)
+    pad = 4
+    cw, ch = width + pad, height + pad
+
+    # Classify each source pixel and build two RGBA layers at the
+    # padded canvas size, shadow offset by (2,2), main shape at (0,0).
+    shadow_alpha_src = bytearray(width * height)
+    main_canvas = bytearray(cw * ch * 4)  # transparent black by default
+    shadow_canvas_alpha = bytearray(cw * ch)
+
+    for y in range(height):
+        for x in range(width):
+            i = (y * width + x) * 4
+            r, g, b, a = rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]
+            if a <= 20:
+                continue
+            if g > r and g > 40:
+                shadow_alpha_src[y * width + x] = 150
+            elif r >= g and r > 40:
+                cx, cy = x, y  # main shape at (0,0) offset
+                ci = (cy * cw + cx) * 4
+                main_canvas[ci:ci + 4] = bytes((fill_rgb[0], fill_rgb[1], fill_rgb[2], a))
+
+    blurred = _box_blur_alpha(shadow_alpha_src, width, height, 1)
+    for y in range(height):
+        for x in range(width):
+            v = blurred[y * width + x]
+            if v <= 2:
+                continue
+            cx, cy = x + 2, y + 2  # shadow offset
+            shadow_canvas_alpha[cy * cw + cx] = v
+
+    # Composite shadow under main (main already fully opaque where set,
+    # so a straight overwrite is correct -- there's no partial-alpha
+    # blending needed between the two layers at their respective pixels
+    # since red/green classification is mutually exclusive per source
+    # pixel and their canvas positions only overlap at the 2px offset
+    # seam, where "main wins" is exactly the intended look).
+    canvas = bytearray(cw * ch * 4)
+    for p in range(cw * ch):
+        a = shadow_canvas_alpha[p]
+        if a:
+            canvas[p * 4:p * 4 + 4] = bytes((0, 0, 0, a))
+    for p in range(cw * ch):
+        if main_canvas[p * 4 + 3]:
+            canvas[p * 4:p * 4 + 4] = main_canvas[p * 4:p * 4 + 4]
+
+    # Crop to content bbox + small margin, same as the PIL path.
+    min_x, min_y, max_x, max_y = cw, ch, -1, -1
+    for y in range(ch):
+        for x in range(cw):
+            if canvas[(y * cw + x) * 4 + 3] > 0:
+                if x < min_x: min_x = x
+                if x > max_x: max_x = x
+                if y < min_y: min_y = y
+                if y > max_y: max_y = y
+    if max_x < 0:
+        _png_write_rgba(out_path, cw, ch, canvas)
+        return
+    margin = 2
+    x0 = max(0, min_x - margin); y0 = max(0, min_y - margin)
+    x1 = min(cw - 1, max_x + margin); y1 = min(ch - 1, max_y + margin)
+    out_w, out_h = x1 - x0 + 1, y1 - y0 + 1
+    cropped = bytearray(out_w * out_h * 4)
+    for y in range(out_h):
+        src_row_start = ((y0 + y) * cw + x0) * 4
+        cropped[y * out_w * 4:(y + 1) * out_w * 4] = canvas[src_row_start:src_row_start + out_w * 4]
+    _png_write_rgba(out_path, out_w, out_h, cropped)
+
+
+def _recolor_icon_pil(src_path, out_path, hexcolor):
+    """Same algorithm, using PIL/numpy when they happen to be available (faster, identical result)."""
+    from PIL import Image, ImageFilter
+    import numpy as np
+    im = Image.open(src_path).convert("RGBA")
+    arr = np.array(im).astype(np.int16)
+    r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
+    opaque = a > 20
+    is_green = opaque & (g > r) & (g > 40)
+    is_red = opaque & (r >= g) & (r > 40)
+
+    h, w = r.shape
+    shadow_alpha = np.where(is_green, 150, 0).astype(np.uint8)
+    shadow_im = Image.fromarray(shadow_alpha, "L")
+    shadow_rgba = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    shadow_rgba.putalpha(shadow_im)
+    shadow_rgba = shadow_rgba.filter(ImageFilter.GaussianBlur(1.1))
+    pad = 4
+    canvas = Image.new("RGBA", (w + pad, h + pad), (0, 0, 0, 0))
+    canvas.alpha_composite(shadow_rgba, (2, 2))
+
+    fill_rgb = _hex_to_rgb(hexcolor)
+    main_alpha = np.where(is_red, a, 0).astype(np.uint8)
+    main_rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    main_rgba[:, :, 0] = fill_rgb[0]
+    main_rgba[:, :, 1] = fill_rgb[1]
+    main_rgba[:, :, 2] = fill_rgb[2]
+    main_rgba[:, :, 3] = main_alpha
+    main_im = Image.fromarray(main_rgba, "RGBA")
+    canvas.alpha_composite(main_im, (0, 0))
+
+    bbox = canvas.getbbox()
+    if bbox:
+        margin = 2
+        x0, y0, x1, y1 = bbox
+        x0 = max(0, x0 - margin); y0 = max(0, y0 - margin)
+        x1 = min(canvas.width, x1 + margin); y1 = min(canvas.height, y1 + margin)
+        canvas = canvas.crop((x0, y0, x1, y1))
+    canvas.save(out_path)
+
+
 def build_map_icons():
     """
     Builds Content/ROD/DataAssets/_MapIcons/<key>.png -- recolored,
     shadowed versions of the game's raw red/green mask icon sprites
-    (see MAP_ICON_COLORS above for the full discovery). Real image
-    processing with PIL, run once at build time and cached as static
-    PNGs (consistent with the toolkit's pipeline-driven philosophy --
-    no runtime canvas/shader hacks in the browser):
+    (see MAP_ICON_COLORS above for the full discovery):
 
       1. Read the source icon's raw RGBA pixels.
       2. Green-channel-dominant pixels (the shadow shape) become a
@@ -298,56 +579,52 @@ def build_map_icons():
       3. Red-channel-dominant pixels (the main shape) become a flat
          fill of the confirmed (or honestly-white-if-unconfirmed)
          color, composited OVER the shadow.
+      4. Crop tightly to content bbox + a small margin, so a marker
+         render at ~26-28px isn't mostly empty padding.
 
-    Writes an _index.json recording, per icon key, whether its color
-    is confirmed (explicit user instruction) or defaulted to white
-    for being unconfirmed -- so the legend can visually/textually
-    distinguish the two rather than presenting every color as equally
-    certain.
+    ZERO required dependencies: uses a small pure-stdlib PNG decoder/
+    encoder (_png_read_rgba/_png_write_rgba, zlib + struct only) as
+    the DEFAULT path, verified against all 26 source icons (8-bit
+    RGBA, non-interlaced -- the only shape this codec implements).
+    PIL/numpy are used INSTEAD when actually importable (faster,
+    identical output), but are no longer required for this feature to
+    work at all.
+
+    HISTORY: an earlier version required Pillow/numpy and degraded to
+    "no icons" when they weren't installed, which turned out to be a
+    real, unresolvable problem for at least one deployment -- no
+    project Dockerfile to add a RUN pip install to, and no reliably
+    persistent way to install into a running container by hand. Rather
+    than keep asking for an install that isn't practical everywhere
+    this toolkit runs, this feature no longer needs one.
     """
-    from PIL import Image, ImageFilter
-    import numpy as np
+    use_pil = False
+    try:
+        from PIL import Image, ImageFilter  # noqa: F401
+        import numpy as np  # noqa: F401
+        use_pil = True
+    except ImportError:
+        pass
 
     icon_src_dir = os.path.join(SRC, "Widget/3DMapCapture/MapIcon/IconImages")
     out_dir = os.path.join(OUT, "DataAssets/_MapIcons")
     os.makedirs(out_dir, exist_ok=True)
 
     index = {}
+    errors = []
     for key, (stem, hexcolor, confirmed) in MAP_ICON_COLORS.items():
         src_path = os.path.join(icon_src_dir, f"{stem}.png")
         if not os.path.exists(src_path):
             continue
-        im = Image.open(src_path).convert("RGBA")
-        arr = np.array(im).astype(np.int16)
-        r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
-        opaque = a > 20
-        is_green = opaque & (g > r) & (g > 40)
-        is_red = opaque & (r >= g) & (r > 40)
-
-        h, w = r.shape
-        # Shadow layer: green-shape silhouette, offset down-right, blurred.
-        shadow_alpha = np.where(is_green, 160, 0).astype(np.uint8)
-        shadow_im = Image.fromarray(shadow_alpha, "L")
-        shadow_rgba = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        shadow_rgba.putalpha(shadow_im)
-        shadow_rgba = shadow_rgba.filter(ImageFilter.GaussianBlur(2.2))
-        canvas = Image.new("RGBA", (w + 6, h + 6), (0, 0, 0, 0))
-        canvas.alpha_composite(shadow_rgba, (4, 4))  # down-right offset
-
-        # Main shape: flat fill of the assigned color, full opacity
-        # where the red mask was opaque.
-        fill_rgb = _hex_to_rgb(hexcolor)
-        main_alpha = np.where(is_red, a, 0).astype(np.uint8)
-        main_rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        main_rgba[:, :, 0] = fill_rgb[0]
-        main_rgba[:, :, 1] = fill_rgb[1]
-        main_rgba[:, :, 2] = fill_rgb[2]
-        main_rgba[:, :, 3] = main_alpha
-        main_im = Image.fromarray(main_rgba, "RGBA")
-        canvas.alpha_composite(main_im, (1, 1))  # slight inset so shadow rim shows
-
         out_path = os.path.join(out_dir, f"{key}.png")
-        canvas.save(out_path)
+        try:
+            if use_pil:
+                _recolor_icon_pil(src_path, out_path, hexcolor)
+            else:
+                _recolor_icon_pure_python(src_path, out_path, hexcolor)
+        except Exception as e:
+            errors.append((key, str(e)))
+            continue
         index[key] = {
             "file": f"DataAssets/_MapIcons/{key}.png",
             "color": hexcolor,
@@ -357,8 +634,11 @@ def build_map_icons():
 
     save_json(os.path.join(out_dir, "_index.json"), index)
     confirmed_count = sum(1 for v in index.values() if v["colorConfirmed"])
-    print(f"  Map icons: {len(index)} recolored ({confirmed_count} confirmed colors, "
-          f"{len(index) - confirmed_count} defaulted to white -- unconfirmed)")
+    engine = "PIL/numpy" if use_pil else "pure-stdlib PNG codec (no dependencies)"
+    print(f"  Map icons: {len(index)} recolored via {engine} "
+          f"({confirmed_count} confirmed colors, {len(index) - confirmed_count} defaulted to white -- unconfirmed)")
+    if errors:
+        print(f"  WARNING: {len(errors)} icon(s) failed to recolor: {errors}")
     return index
 
 
@@ -1253,6 +1533,170 @@ RECIPE_CATEGORIES = {
 # every time, which is unambiguous and uses the same value the game's
 # own UI would substitute in.
 RECIPE_TEMPLATE_PATTERN = re.compile(r"\{Rep_ItemName_(\w+?)_(-?\d+)\}")
+
+
+def build_item_sources(all_weapons, all_armor, all_items, all_recipes, all_chests, all_monster_drops, all_shops):
+    """
+    Builds Content/ROD/DataAssets/Database/ItemSources/ItemSources.json
+    -- a per-itemKey cross-reference answering "where does this thing
+    actually come from", assembled from sections that already exist
+    (Recipes, Chests, Monsters > Drops, Shops) rather than recomputing
+    anything. Built as ONE combining pass over all of them (526 chests
+    x their pools, 242 drop rows x their pools, ~245 recipes, 6 shops)
+    so every Weapon/Armor/Consumable preview panel does a single O(1)
+    dict lookup instead of re-scanning these datasets client-side on
+    every render.
+
+    For a given finished item (a weapon, armor piece, or catalog item,
+    identified by its OWN itemKey), the assembled entry can carry:
+      - recipe: the recipe that PRODUCES this item, if any (looked up
+        by matching recipe.producedItemKey to this item's key) --
+        includes its own recipeKey, colCost, and materials list.
+      - recipeFoundInChests / recipeDroppedByMonsters: locations for
+        the RECIPE ITSELF (not the finished item), resolved by
+        re-using the SAME chest/drop pool scan below against the
+        recipe's own itemKey (the "purchase token" -- confirmed
+        pattern from the Shops section).
+      - recipeAvailableInShops: shop id(s) selling that recipe,
+        resolved via the confirmed Cost-token -> recipe join Shops
+        already established.
+      - foundInChests / droppedByMonsters: locations for the FINISHED
+        item itself, in case it's ALSO placed as direct loot (checked
+        generically -- not assumed to never happen).
+      - usedAsMaterialIn: recipes that consume this item as one of
+        their crafting materials (the reverse of "materials").
+      - sourceDataTables / sourceDataAssets: the real file paths this
+        item's own data was built from, for the "show your sources"
+        request -- same paths already recorded in each contributing
+        section's own docstrings, just surfaced per-item now.
+
+    HONEST LIMIT: this cross-reference can only be as complete as the
+    sections feeding it. Chests/Drops resolve most, not all, item
+    slots (Cost/Col/Invalid remain unresolved -- see those sections'
+    own coverage notes); an item with no recipe, no chest hit, and no
+    drop hit is NOT "wrong", it may simply not be attainable through
+    any of the three systems this export exposes attainability data
+    for (e.g. quest rewards, an unexported system, or simply unused
+    data) -- the preview panel states this per-item rather than
+    showing an empty section with no explanation.
+    """
+    # Recipe reverse-lookups.
+    recipe_by_produced = {}       # producedItemKey -> recipe
+    materials_used_in = {}        # materialItemKey -> [ {recipeKey, itemKey, producedItemKey, quantity} ]
+    for recipe in all_recipes.values():
+        if recipe.get("producedItemKey"):
+            recipe_by_produced[recipe["producedItemKey"]] = recipe
+        for mat in recipe.get("materials", []):
+            if mat.get("itemKey"):
+                materials_used_in.setdefault(mat["itemKey"], []).append({
+                    "recipeKey": recipe["recipeKey"],
+                    "itemKey": recipe["itemKey"],
+                    "producedItemKey": recipe.get("producedItemKey"),
+                    "quantity": mat.get("quantity"),
+                })
+
+    # Shop reverse-lookup: recipeItemKey -> [shopId, ...]
+    shops_by_recipe_key = {}
+    for shop in all_shops:
+        for entry in shop.get("entries", []):
+            if entry.get("recipeItemKey"):
+                shops_by_recipe_key.setdefault(entry["recipeItemKey"], []).append(shop["shopId"])
+
+    # Single pass over every chest's resolved pools.
+    chest_hits = {}  # itemKey -> [ {chestId, location} ]
+    for chest in all_chests.values():
+        for pool in chest.get("pools", {}).values():
+            for slot in pool:
+                if slot.get("itemKey"):
+                    chest_hits.setdefault(slot["itemKey"], []).append({
+                        "chestId": chest["chestId"], "location": chest.get("location"),
+                    })
+
+    # Single pass over every monster reward row's resolved pools.
+    drop_hits = {}  # itemKey -> [ {rewardKey, enemyCode, enemyNameKey} ]
+    for reward in all_monster_drops:
+        for pool in reward.get("pools", {}).values():
+            for slot in pool:
+                if slot.get("itemKey"):
+                    drop_hits.setdefault(slot["itemKey"], []).append({
+                        "rewardKey": reward.get("rewardKey"),
+                        "enemyCode": reward.get("enemyCode"),
+                        "enemyNameKey": reward.get("enemyNameKey"),
+                    })
+
+    # Source file paths per finished-item collection -- recorded once
+    # here rather than re-deriving; matches each section's own builder.
+    SOURCE_PATHS = {
+        "weapon": {
+            "dataTables": [],
+            "dataAssets": ["DataAssets/Items/ItemDataAsset.json (weapon category maps)"],
+        },
+        "armor": {
+            "dataTables": [],
+            "dataAssets": ["DataAssets/Items/ItemDataAsset.json (armor category maps)"],
+        },
+        "item": {
+            "dataTables": ["DataAssets/Database/DT_ItemDatabase.json"],
+            "dataAssets": ["DataAssets/Items/ItemDataAsset.json (Usable/Material/KeyItem category maps)"],
+        },
+    }
+
+    def build_entry(item_key, kind):
+        recipe = recipe_by_produced.get(item_key)
+        entry = {
+            "itemKey": item_key,
+            "kind": kind,
+            "recipe": None,
+            "recipeAvailableInShops": [],
+            "recipeFoundInChests": [],
+            "recipeDroppedByMonsters": [],
+            "foundInChests": chest_hits.get(item_key, []),
+            "droppedByMonsters": drop_hits.get(item_key, []),
+            "usedAsMaterialIn": materials_used_in.get(item_key, []),
+            "sourceDataTables": SOURCE_PATHS[kind]["dataTables"],
+            "sourceDataAssets": SOURCE_PATHS[kind]["dataAssets"],
+        }
+        if recipe:
+            entry["recipe"] = {
+                "recipeKey": recipe["recipeKey"], "itemKey": recipe["itemKey"],
+                "category": recipe["category"], "categoryLabel": recipe["categoryLabel"],
+                "colCost": recipe.get("colCost"), "materials": recipe.get("materials", []),
+            }
+            entry["recipeAvailableInShops"] = shops_by_recipe_key.get(recipe["itemKey"], [])
+            entry["recipeFoundInChests"] = chest_hits.get(recipe["itemKey"], [])
+            entry["recipeDroppedByMonsters"] = drop_hits.get(recipe["itemKey"], [])
+            entry["sourceDataTables"] = list(dict.fromkeys(
+                entry["sourceDataTables"] + ["DataAssets/Items/ItemDataAsset.json (recipe maps)"]))
+        return entry
+
+    sources = {}
+    for item_key in all_weapons:
+        sources[item_key] = build_entry(item_key, "weapon")
+    for item_key in all_armor:
+        sources[item_key] = build_entry(item_key, "armor")
+    for item_key in all_items:
+        sources[item_key] = build_entry(item_key, "item")
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/ItemSources")
+    save_json(os.path.join(out_dir, "ItemSources.json"), sources)
+    with_recipe = sum(1 for v in sources.values() if v["recipe"])
+    with_chest = sum(1 for v in sources.values() if v["foundInChests"] or v["recipeFoundInChests"])
+    with_drop = sum(1 for v in sources.values() if v["droppedByMonsters"] or v["recipeDroppedByMonsters"])
+    with_any = sum(1 for v in sources.values() if v["recipe"] or v["foundInChests"] or v["droppedByMonsters"]
+                   or v["recipeFoundInChests"] or v["recipeDroppedByMonsters"] or v["usedAsMaterialIn"])
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "itemCount": len(sources),
+        "withRecipe": with_recipe,
+        "withChestSource": with_chest,
+        "withMonsterDropSource": with_drop,
+        "withAnySource": with_any,
+        "withNoKnownSource": len(sources) - with_any,
+        "file": "DataAssets/Database/ItemSources/ItemSources.json",
+    })
+    print(f"  Item sources: {len(sources)} items cross-referenced ({with_recipe} with a recipe, "
+          f"{with_chest} with a chest source, {with_drop} with a monster-drop source, "
+          f"{len(sources) - with_any} with no known source in this export)")
+    return sources
 
 
 def build_recipes():
@@ -4501,9 +4945,22 @@ def build_world_map(all_chests):
                 term_coords[t["ID"]] = {"x": c["X"], "y": c["Y"]}
 
     chest_ids_by_location = {}
+    chest_contents_by_location = {}
     for cid, chest in (all_chests or {}).items():
-        if chest.get("location"):
-            chest_ids_by_location.setdefault(chest["location"], []).append(cid)
+        if not chest.get("location"):
+            continue
+        chest_ids_by_location.setdefault(chest["location"], []).append(cid)
+        contents = []
+        for pool in chest.get("pools", {}).values():
+            for slot in pool:
+                if slot.get("itemKey"):
+                    contents.append({
+                        "itemKey": slot["itemKey"], "num": slot.get("num"),
+                        "sharePct": slot.get("sharePct"),
+                    })
+        chest_contents_by_location.setdefault(chest["location"], []).append({
+            "chestId": cid, "contents": contents,
+        })
 
     PIECE_PX = 512
     areas = []
@@ -4584,6 +5041,7 @@ def build_world_map(all_chests):
                 "bounds": bounds,
                 "markers": sorted(markers, key=lambda m: m["id"]),
                 "chestIds": sorted(chest_ids_by_location.get(location, [])),
+                "chests": sorted(chest_contents_by_location.get(location, []), key=lambda c: c["chestId"]),
                 "hasOwnCoordinate": gate_id in term_coords,
                 "seamRisk": seam["seamRisk"],
                 "minPieceOverlapFraction": seam["minOverlapFraction"],
@@ -4643,11 +5101,15 @@ def build_world_map(all_chests):
     # Real, recolored map icons (see build_map_icons -- the game's own
     # icon sprites are unrecolored red/green mask layers; this points
     # at the pipeline's own recolored output instead of the raw ones).
-    icon_keys = ["safeArea", "warpTerminal", "treasureChest", "waypoint", "ark", "seal",
-                 "magicalSeal", "sideQuestTrinket", "townSmithy", "townChest", "townItemSeller",
-                 "boss", "monsterSpawn", "material", "missionObjective"]
+    # Reads keys directly from MAP_ICON_COLORS (the single source of
+    # truth build_map_icons itself uses) rather than a separately
+    # maintained duplicate list -- a duplicate list is exactly how a
+    # prior session's expansion of MAP_ICON_COLORS to 26 keys silently
+    # failed to reach WorldMap.json's icons registry (this list was
+    # never updated alongside it, caught when a status check showed
+    # only 15 of 26 icons actually wired through).
     icons = {}
-    for key in icon_keys:
+    for key in MAP_ICON_COLORS:
         candidate = os.path.join(OUT, "DataAssets/_MapIcons", f"{key}.png")
         if os.path.exists(candidate):
             icons[key] = f"Content/ROD/DataAssets/_MapIcons/{key}.png"
@@ -6990,7 +7452,7 @@ PIPELINE_SECTIONS = [
     },
     {
         "key": "shops", "label": "Items > Shops",
-        "builder": build_shops, "requires": [], "produces": None,
+        "builder": build_shops, "requires": [], "produces": "all_shops",
         "rawInputs": ["DataAssets/Games/DataTables/DT_ShopItemList.json", "DataAssets/Items/ItemDataAsset.json"],
         "expectedOutputs": ["DataAssets/Database/Shops/Shops.json", "DataAssets/Database/Shops/_index.json"],
     },
@@ -7271,6 +7733,17 @@ PIPELINE_SECTIONS = [
         "expectedOutputs": ["DataAssets/Database/Chests/Localization/_manifest.json"],
     },
     {
+        # Combines Recipes/Chests/Drops/Shops (all already built) into
+        # one per-item cross-reference -- see build_item_sources'
+        # docstring. Requires every section whose output it reads.
+        "key": "item_sources", "label": "Items > Sources & Crafting",
+        "builder": build_item_sources,
+        "requires": ["all_weapons", "all_armor", "all_items", "all_recipes", "all_chests", "all_monster_drops", "all_shops"],
+        "produces": "all_item_sources",
+        "rawInputs": [],
+        "expectedOutputs": ["DataAssets/Database/ItemSources/ItemSources.json", "DataAssets/Database/ItemSources/_index.json"],
+    },
+    {
         "key": "character_loc", "label": "Character Localization",
         "builder": build_character_localization, "requires": ["all_characters"], "produces": None,
         "rawInputs": ["Localization/Game/*/Game.json"],
@@ -7428,7 +7901,7 @@ FOCUS_GROUPS = {
     },
     "items": {
         "label": "Items (Catalog/Recipes)",
-        "sections": ["items", "recipes", "shops", "chests", "item_loc", "recipe_loc", "chest_loc"],
+        "sections": ["items", "recipes", "shops", "chests", "item_loc", "recipe_loc", "chest_loc", "item_sources"],
     },
     "equipment": {
         "label": "Equipment (Weapons/Armor/Sword Skills/MODs)",

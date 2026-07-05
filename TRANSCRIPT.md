@@ -2562,6 +2562,447 @@ linking straight to the packaged `.skill` file.
 
 ---
 
+## 33. Real-deployment crash: PIL/numpy missing, and the fix
+
+User ran the "world" (or a group including map_icons) focus build on
+their actual Docker deployment and hit a hard crash:
+`ModuleNotFoundError: No module named 'PIL'`, which took down the
+ENTIRE focus-group run -- including `armor`, `chests`, `weapons`,
+sections with nothing to do with map icons, because they'd already
+been auto-included as prerequisites by the time `map_icons`' builder
+raised. This repo has no `requirements.txt` or `Dockerfile` of its
+own, and my own sandbox happened to have Pillow/numpy preinstalled,
+so this never surfaced until a real deployment without them hit it.
+
+**Fix**: `build_map_icons()`'s `from PIL import ...` now sits behind a
+try/except. On `ImportError`, it prints an actionable install command
+(`pip install Pillow numpy --break-system-packages`), writes an EMPTY
+`_index.json` (so `build_world_map`'s existence-check icon lookup
+correctly resolves to "no icons available" rather than a missing or
+half-written file), and returns cleanly instead of raising -- the
+whole focus group now completes normally around it.
+
+**Verified three ways**, not just read-through: (1) `sys.modules['PIL']
+= None` + `sys.modules['numpy'] = None` (the correct way to force a
+real `ImportError` in-process, unlike a meta_path finder which doesn't
+reliably intercept already-resolvable stdlib-style imports) then
+called `build_map_icons()` directly -- confirmed it returns `{}` and
+writes the empty index without raising; (2) ran the FULL `world` focus
+group under the same blocked-import condition end to end -- completed
+normally, no crash, `map_icons` was the only section that skipped
+work; (3) deleted the previously-generated icon PNGs first (to rule
+out the check silently passing only because leftover files from an
+earlier real run were still on disk) and re-ran `map_icons` +
+`world_map` together under the blocked condition -- `WorldMap.json`'s
+`icons` field came back `{}` on a genuinely icon-less, PIL-less run,
+which the view already renders as text/symbol fallback markers
+(that fallback path was already coded in `markerVisual`/`legendRows`/
+`legendIconHtml`, just never exercised until now). Icons were then
+restored with a normal `--group=textures` run with Pillow actually
+present.
+
+Added `requirements.txt` at the project root documenting Pillow/numpy
+as OPTIONAL (the core pipeline needs zero installs; only
+`map_icons` benefits from them), with the exact install command and
+what happens if they're skipped.
+
+---
+
+## 34. Map icons "messed up again": padding/shadow tuning, and a distortion bug it exposed
+
+User feedback after the color pass: icons on the map looked wrong
+again. Investigated by measuring the composited PNGs directly rather
+than guessing from a description -- the earlier version's shadow
+offset (4px) and canvas padding (+6px) were tuned for a large preview
+render, and at the actual marker size the map uses (26-28px), the
+content only filled 67-71% of its own canvas, concentrated toward the
+bottom-right (the shadow's offset direction) -- confirmed by measuring
+each icon's opaque-pixel bounding box against its canvas size. At a
+28px render, that reads as a shrunken, off-center blob, not a crisp
+icon.
+
+**Fix**: reduced the shadow offset (4px -> 2px) and blur radius
+(2.2 -> 1.1) for something appropriate at small render sizes, and
+added a tight crop to each composited icon's own alpha bounding box
+(2px uniform margin) so the exported PNG is mostly icon, not empty
+padding. Verified numerically before and after: bounding boxes now
+touch within 2px of every edge on every icon checked.
+
+**A second, related bug the crop exposed**: cropping to content
+bounding box makes each icon's canvas a DIFFERENT aspect ratio
+depending on its shape (an Ark glyph crops to 39x50, a Magical Seal to
+52x52, etc.) -- but two of the three places markers render these
+icons set BOTH `width` and `height` to the same fixed pixel value with
+no `object-fit`, which would STRETCH/SKEW a non-square crop into a
+square box. The legend's own icon rendering already had
+`object-fit:contain` (added the very first time this feature was
+built, before crops made it strictly necessary); the two marker-icon
+render paths (`markerVisual`'s Safe Area/Warp Terminal icons and the
+Waypoint pin icon) did not, and now do.
+
+Rebuilt the `world` focus group and reran a fresh full `--status`
+check after both fixes; all sections still pass.
+
+---
+
+## 35. Full icon catalog (26) + manual map markers for Towns/Dungeons
+
+User feedback approved the World View / Field Map / Towns / Dungeons
+structure and gave a complete icon list, confirming the red/green
+mask-sprite theory from section 32 generalizes to every icon in the
+folder. Also asked for a manual entry system (pick a pin, enter X/Y
+scalers, submit, stored per area up to 999 entries) -- precisely what
+Towns and Dungeons need, since neither has ANY exported coordinate
+data.
+
+### Icon catalog: 15 -> 26
+
+Added Town, Dungeon Entrance, Search Terminal, Door, Elite Monster,
+Player, and 6 Waypoint pin graphics (the classic pin + 5
+"InstantPin_*" skins, all confirmed yellow -- same family as the
+original Waypoint color, offered as different pin GRAPHICS a manual
+entry can choose between, not different meanings) to
+`MAP_ICON_COLORS`. Verified all 25 requested source files exist
+before touching the registry. One correction along the way: an
+earlier session's Side Quest Trinket mapping pointed at
+`T_Mapicon_SubQuestNPC_Order`; corrected to `T_Mapicon_SubQuest` per
+this session's explicit list.
+
+**A real bug caught by cross-checking output, not just code review**:
+after rebuilding, `WorldMap.json`'s `icons` registry still showed
+only 15 keys, not 26. `build_world_map()` had its OWN hardcoded
+`icon_keys` list, separately maintained from `MAP_ICON_COLORS`, never
+updated when the catalog grew -- a classic duplicated-source-of-truth
+bug. Fixed by having `build_world_map` iterate `MAP_ICON_COLORS`
+directly instead of a second list; re-verified 26/26 keys present
+afterward.
+
+### Manual map markers (new user-content system)
+
+Mirrors Modding Guides' own outside-the-pipeline pattern: new
+`server.js` endpoints (`GET/POST/DELETE /api/map-markers/:mapType/
+:areaKey`, mapType one of field/world/town/dungeon) store one JSON
+manifest per map surface under `map-markers/*.json` at the project
+root -- never touched by `build_pipeline.py`. Entries are `{id,
+iconKey, x, y, label, createdAt}` with x/y NORMALIZED 0.0-1.0 against
+that surface's own canvas -- deliberately not world coordinates, so
+the exact same entry shape and rendering code works for Field Map/
+World View (which have world coords, converted via wPx/hPx) and
+Towns/Dungeons (which never will, using the image's own pixel
+dimensions directly) without a special case. Capped at 999 entries
+per manifest server-side; strict area-key sanitization since it's a
+filename component. Verified end to end against the running server:
+add/get/delete round-tripped correctly on all four map types,
+including 400s for out-of-range coordinates and an invalid map type.
+
+Frontend: a reusable "Add Marker" panel (icon dropdown covering the
+full 26-icon catalog, X/Y number inputs, optional label, submit) on
+every map surface, plus click-anywhere-on-the-map to auto-fill X/Y
+(a click, not a drag -- pan-vs-click was disambiguated with a small
+movement threshold so panning the Field Map/World View doesn't
+accidentally set coordinates). Manual entries render alongside
+automatic ones through the same marker-drawing pass and the same
+legend, which now shows every icon key that EITHER has a curated
+default for that surface OR an actual manual entry present -- nothing
+placed is ever invisible in its own legend.
+
+### Towns and Dungeons gain a real interactive stage
+
+Previously plain `<img>` reference views; now an actual
+position:relative overlay (`renderImageMarkerStage` +
+`setupImageMarkerStage`, shared between both) supporting click-to-set-
+coordinates and rendered/removable manual markers directly on the
+image, with per-surface curated legend defaults matching the user's
+own examples (Smithy/Shop/Chest for Towns; Safe Areas/Warp Terminals/
+Boss/Treasure Chest/Materials for Dungeons).
+
+Rebuilt the `world` focus group and reran a fresh full `--status`
+check after all fixes; 58/58 sections still pass.
+
+---
+
+## 36. Manual marker UX fixes: refresh bug, live placement preview, and a missing-icons diagnostic
+
+User feedback with a screenshot: still seeing fallback symbols (a
+plain white triangle, diamond outlines) instead of real icons, no
+visible way to remove a marker after adding one, and no indication of
+where a marker will land while adjusting X/Y before submitting.
+
+### The delete-list refresh bug (real, confirmed)
+
+`renderAddMarkerPanel`'s `onChange` callback, wired at all four map-
+surface call sites, only re-drew the map's PINS -- it never re-invoked
+the panel that shows the existing-markers delete list or the count. A
+marker added successfully WOULD appear on the map, but the sidebar
+list a person needs to find the delete button in never updated to
+show it, so there was genuinely no reachable way to remove what you
+just added (or anything else) without a full page reload. Fixed by
+splitting the panel into a static shell (`renderAddMarkerPanel`,
+rendered once) and a refreshable list (`renderExistingMarkerList`,
+re-rendered on every add/delete via a proper `onMarkerChange` that
+does both the map redraw AND the list refresh) at all four sites
+(Field Map area, World View, and the shared Towns/Dungeons image
+stage) plus the on-map click-to-delete path for both marker kinds.
+
+### Live placement preview
+
+Added `updateMarkerPreview()`: a dashed, semi-transparent ghost pin at
+the form's current icon/X/Y, rendered on the same stage as real
+markers. Wired to fire on every icon-select change, every X/Y input
+keystroke, and every click-to-set-coordinates action (map click for
+Field Map/World View, image click for Towns/Dungeons) -- answers
+"nothing represents where the marker will land" directly rather than
+requiring a blind submit-and-check cycle.
+
+### Icons still showing fallback symbols: a diagnostic banner, not a guess
+
+Re-verified this session's own build produces all 26 recolored icons
+correctly (confirmed via WorldMap.json's icons registry and a live
+HTTP fetch through the running server), so the screenshot's fallback
+symbols are not a bug in the shipped code as run in this environment.
+The most likely explanation, consistent with a design decision from
+section 33: `build_map_icons()` degrades gracefully (not a crash) when
+Pillow/numpy aren't installed on the SERVING deployment, writing an
+empty icon index -- exactly what produces plain-symbol fallbacks
+everywhere, indistinguishable in the UI from "the feature is broken"
+without an explicit message. Rather than guess further at a remote
+deployment's package state, added a clear diagnostic banner to World
+Map itself: whenever the loaded icon registry is empty, a banner
+states plainly that Pillow/numpy are needed and gives the exact
+install + rebuild command, so "old icons" reads as "not built on this
+server yet" instead of a rendering defect.
+
+Rebuilt the world/textures groups and reran a fresh full `--status`
+check; 58/58 sections still pass. Server-side marker CRUD re-verified
+against the running server after all frontend changes.
+
+---
+
+## 37. Icons still not showing after a rebuild: eliminated the dependency entirely
+
+User confirmed the diagnostic banner from section 36 WAS showing ("no
+recolored icons found") even after running a full rebuild from the
+Build Dashboard -- meaning Pillow/numpy genuinely aren't installed on
+that deployment, and (reasonably) there's no practical way to fix
+that on their end: this repo ships no Dockerfile of its own to add a
+`RUN pip install` to, and installing into an already-running container
+by hand doesn't survive a restart. Asking for an install that isn't
+practical for the environment wasn't a real fix.
+
+**Real fix: removed the dependency.** Wrote a small pure-stdlib PNG
+decoder/encoder (`_png_read_rgba` / `_png_write_rgba`, `zlib` + `struct`
+only) after first verifying it's safe to scope narrowly: checked
+EVERY ONE of the 26 source icon PNGs' actual IHDR chunk and confirmed
+all are 8-bit RGBA (color type 6), non-interlaced -- the one shape the
+codec implements, chosen because it's the one shape that's actually
+present, not a guess. Implements all four PNG filter types (None/Sub/
+Up/Average/Paeth) for decode and writes filter-type-None on encode
+(larger output than adaptive filtering, irrelevant at icon sizes).
+Added `_box_blur_alpha` (a plain two-pass separable box blur) as the
+pure-Python stand-in for PIL's `GaussianBlur`, and
+`_recolor_icon_pure_python` reimplementing the exact same red/shape
++green/shadow+crop-to-bbox algorithm as the existing PIL path
+(extracted unchanged into `_recolor_icon_pil`) using plain bytearray
+loops instead of numpy.
+
+`build_map_icons()` now tries `import PIL/numpy` and uses them when
+present (faster; identical algorithm), but falls back to the pure-
+stdlib path automatically otherwise -- map icon recoloring no longer
+requires ANY third-party package, on any deployment, ever. Updated
+`requirements.txt` to say so plainly (Pillow/numpy are now an
+optional speedup, not a requirement) and softened the diagnostic
+banner's wording to match (points at re-running the build rather than
+an install command that may not apply).
+
+**Verified, not just written**: force-disabled PIL/numpy in-process
+(`sys.modules['PIL'] = None`) and confirmed `build_map_icons()`
+produces all 26 icons via the pure-Python path; opened the resulting
+PNGs WITH PIL (proving they're valid, standard-conforming files, not
+just self-consistent with my own decoder) and checked color/shadow/
+crop correctness numerically -- white fill, black shadow alpha, tight
+bbox, matching the PIL path's own output within a few pixels (the
+size difference traced to PIL's Gaussian blur vs. this session's box
+blur spreading faint alpha slightly differently before the bbox crop
+-- a cosmetic difference only, and `object-fit:contain` already
+handles varying icon aspect ratios in the view). Ran the ENTIRE
+`world` focus group with PIL/numpy force-disabled end to end and
+confirmed `WorldMap.json` still reports all 26 icons. Restored the
+PIL-accelerated build for this session's own output and reran a fresh
+full `--status` check; 58/58 sections pass.
+
+---
+
+## 38. Map fixes (hide-preview toggle, default pin), and Weapon/Armor/Item "Sources & Crafting" panels
+
+### Two small World Map fixes
+
+Added a "Hide preview"/"Show preview" toggle button next to the
+click-to-set-coordinates hint, so the dashed ghost pin can be
+dismissed once it's in the way of markers already placed nearby
+(state flag checked at the top of `updateMarkerPreview`, which now
+returns early and clears any existing preview element when hidden).
+Changed the Add Marker form's default icon from `safeArea` to
+`waypointPinCommon`, per request.
+
+### Weapon/Armor/Item preview panels: "Sources & Crafting"
+
+The user now has confirmed recipe/cost/material/chest/shop data (from
+this session's earlier work) and asked for it surfaced directly on
+item preview panels, with sourcing (which DataTable/DataAsset it
+came from). Rather than re-scan Recipes/Chests/Drops/Shops in the
+BROWSER on every render (526 chests x pools, 242 drop rows x pools),
+built ONE server-side cross-reference pass, `build_item_sources()`
+(new `item_sources` pipeline section, 58 -> 59 sections), combining
+four sections that already existed:
+
+  - `recipe_by_produced`: reverse-maps a recipe's `producedItemKey`
+    back to the recipe itself (cost, materials, category).
+  - `materials_used_in`: reverse-maps each crafting MATERIAL's itemKey
+    to every recipe that consumes it -- the "used as a material in"
+    direction nothing else in the toolkit currently surfaces.
+  - `shops_by_recipe_key`: reuses the CONFIRMED Cost-token-is-a-
+    recipe-purchase join from the Shops section to answer "which shop
+    sells the recipe for this item".
+  - `chest_hits` / `drop_hits`: one combined pass each over every
+    chest's resolved pools and every monster reward row's resolved
+    pools, building itemKey -> [locations] / itemKey -> [monsters]
+    reverse indexes -- run ONCE here, not per-item, and not
+    per-render in the browser.
+
+A real dependency-graph fix was needed first: `shops`' section
+declared `"produces": None`, meaning its return value (the actual
+shop list) was never available to later builders via the requires/
+produces mechanism, even though the function already computed and
+returned it. Changed to `"produces": "all_shops"` -- a safe, additive
+change since nothing previously depended on it. `item_sources`
+declares `requires` on all seven upstream values it needs
+(all_weapons, all_armor, all_items, all_recipes, all_chests,
+all_monster_drops, all_shops); verified the pipeline's own dependency
+resolver auto-included every one of them (weapons/armor/monster_drops
+weren't even listed in the `items` focus group) when run via
+`--group=items`.
+
+Result, verified directly from the built output: 345 items
+cross-referenced, 236 with a recipe, 163 with a chest source, 163
+with a monster-drop source, 42 with no known source at all (shown
+explicitly on those items' panels, not left blank).
+
+### Frontend: one shared panel, three call sites
+
+New `app/js/item-sources-panel.js` exports
+`renderItemSourcesPanelHtml(itemKey)`, wired into the existing preview
+panels in `weapons-browser.js`, `equipment-browser.js`, and
+`items-browser.js` with a single line each (right after each view's
+own mod-callout/exception block) -- avoiding three near-duplicate
+implementations. Reuses existing `DataStore` getters
+(`getRecipeMaterialsInfo`, `getRecipeDisplayName`, etc.) rather than
+re-deriving display names; added `getItemSources()` (a plain dict
+lookup, returns `null` -- not a fabricated empty shape -- when an
+instance hasn't built this section yet) and
+`getDropSourceMonsterName()` (resolves a drop hit's enemy name via
+the SAME Monster-database join Monsters > Drops already uses,
+falling back to the raw enemy code rather than fabricating a name).
+Every sub-section states its own source file inline (e.g.
+"Source: `DataAssets/Items/ItemDataAsset.json` (recipe maps)"), per
+the request for source-DataTable/DataAsset visibility.
+
+Verified end-to-end: fetched `ItemSources.json` and `_index.json`
+through the running server, confirmed the JSON shape and a sample
+recipe entry resolve correctly. New Data Coverage panel documents the
+combined-source design and the honest 303/345 vs. 42/345 split.
+Rebuilt the `items` focus group and reran a fresh full `--status`
+check; 59/59 sections pass.
+
+---
+
+## 39. Sources & Crafting visual polish, and chest contents on the map
+
+User feedback on section 38's new panel: "used in" lists for popular
+materials could get very long, "found in"/"dropped by" nested scroll
+boxes felt cramped inside an already-scrollable side panel, and
+plain-text item names with no icon made the panel harder to scan.
+Also asked for chest CONTENTS (not just chest IDs) on the World Map.
+
+### Icons next to every cross-referenced item
+
+New `DataStore.getItemIconPath(itemKey)`: a category-transparent
+lookup checking weapons, then armor, then the catalog, returning each
+collection's own icon field (`textures.icon` / `textures.iconSmallMale`
+.../ `textures.iconDatabase`) -- returns `null`, never a guessed path,
+for a key not found in any of the three. Every material, recipe, and
+cross-referenced item row in the Sources & Crafting panel now shows an
+18px icon via this lookup.
+
+### Replaced nested scrollboxes with inline expanders
+
+`renderLocationSection`/`renderDropSection`/the "Used As a Material
+In" list all used a fixed-height `overflow-y:auto` box -- functional,
+but a scrollbar nested inside the side panel's own scroll area is
+easy to miss and feels cramped. Replaced with `expandableListHtml()`:
+shows the first 5 rows inline, and a "+N more" toggle that expands
+the rest in place (no nested scroll, panel height grows naturally,
+toggle re-collapses via "Show less"). Applied uniformly to all three
+list types so the panel behaves consistently regardless of which
+section is long.
+
+### Chest contents on the World Map (Field Map area view)
+
+Previously the map's chest section only listed bare chest IDs --
+useful for the *count*, but seeing what's actually inside required a
+trip to Items > Chests. `build_world_map()` now embeds each area's
+chests as an OBJECT (`chestId` + `contents: [{itemKey, num,
+sharePct}]`), reusing each chest's own resolved pools already computed
+by the Chests section as their SINGLE source (no separate resolution
+logic) -- a new `chests` field alongside the existing `chestIds` (kept
+for compatibility). The Field Map area side panel now renders each
+chest's real contents with an icon, resolved name (via the same
+`getChestItemName` Items > Chests itself uses -- can't disagree with
+that tab), quantity, and weight-derived share percentage, scrollable
+as a whole rather than per-chest.
+
+Rebuilt `world_map` and reran a fresh full `--status` check; 59/59
+sections pass. Verified the new `chests` field and its contents shape
+through the running server via a direct HTTP fetch.
+
+---
+
+## 40. Treasure Chests vanished: a real regression, root-caused and fixed with a fallback
+
+User feedback: the Treasure Chests list (and its contents) disappeared
+from the World Map entirely after section 39's update. Root cause,
+confirmed by reading the exact diff rather than guessing: section 39
+changed the side panel's chest check from `area.chestIds.length`
+(the field every prior build always had) to `area.chests.length` (the
+new rich field with resolved contents) -- with NO fallback. Any
+toolkit instance that applied the new frontend code without ALSO
+re-running the `world_map`/`world` focus build still had the old
+`WorldMap.json` on disk, where `area.chests` simply doesn't exist yet
+-- `undefined.length` would throw, but the code defended against that
+with `area.chests || []`, which silently produced an EMPTY array and
+hid the whole section instead of erroring. The count faithfully went
+to zero and the section vanished, with nothing telling the user why.
+
+**Fix**: the side panel now checks `Array.isArray(area.chests)` to
+decide which field generation it's looking at, falls back to the
+older bare-ID list (`area.chestIds`) when the richer field isn't
+present, and shows an explicit on-screen note ("Contents unavailable
+-- this instance's World Map data predates chest-contents support.
+Re-run the World focus build to see items here") rather than
+silently degrading. Verified the fallback logic directly (a
+stale-shaped area object with only `chestIds` correctly reports
+`hasRichChests: false` and the right count), confirmed the CURRENT
+build has both fields present and consistent, and reran a fresh full
+`--status` check; 59/59 sections pass.
+
+**Process note for future sessions**: any time a pipeline output's
+JSON *shape* changes (a field renamed or added), the consuming
+frontend code needs an explicit stale-data fallback, not just a
+truthy-guard that quietly produces an empty result -- an empty list
+and "the feature doesn't exist yet" look identical to a user unless
+the code says which one it is.
+
+---
+
 ## Lessons learned
 
 1. **Empirical cross-referencing beats single-source trust.** The ACV
@@ -2873,6 +3314,63 @@ covers:
   layer; new "AI Skill" button + modal in Data Coverage; asks for the
   toolkit's base URL in chat, tests connection, re-discovers
   endpoints live rather than trusting a frozen list (see section 32).
+- **Map icons degrade gracefully without Pillow/numpy**: RESOLVED — a
+  real Docker deployment crashed the whole "world" focus group on a
+  missing PIL import; build_map_icons() now catches ImportError,
+  prints an install command, writes an empty icon index, and returns
+  cleanly; World Map falls back to text/symbol markers until
+  installed. New requirements.txt documents both as optional (see
+  section 33).
+- **Map icons: padding/shadow tuning + distortion fix**: RESOLVED —
+  icons filled only 67-71% of their canvas at marker render size
+  (looked shrunken/off-center); tightened shadow offset/blur and
+  cropped to content bbox. The crop made icons non-square, which
+  exposed a real distortion bug in two marker-render paths lacking
+  object-fit:contain (now fixed on all three render paths) (see
+  section 34).
+- **Map icon catalog: 26 icons** (Town, Dungeon Entrance, Search
+  Terminal, Door, Elite Monster, Player, 6 Waypoint pin skins added)
+  + **manual map markers**: new /api/map-markers/:mapType/:areaKey
+  CRUD (server.js), map-markers/*.json per surface (999 cap), a
+  reusable Add Marker form on all 4 map surfaces, click-to-set-
+  coordinates, and real interactive overlays for Towns/Dungeons
+  (previously plain images). Fixed a stale-duplicate-list bug where
+  WorldMap.json's icon registry didn't pick up the expanded catalog
+  (see section 35).
+- **Manual marker UX fixes**: RESOLVED — delete list wasn't
+  refreshing after add (real bug, fixed with a proper onChange split
+  between map redraw and list refresh); added a live dashed-preview
+  pin that follows the form's icon/X/Y before submit; added a
+  diagnostic banner when the icon registry is empty, pointing at the
+  Pillow/numpy install fix rather than leaving "fallback symbols" as
+  an unexplained mystery (see section 36).
+- **Map icon recoloring now needs ZERO dependencies**: RESOLVED — a
+  deployment genuinely couldn't install Pillow/numpy (no Dockerfile
+  of this project's own, no persistent way to install into a running
+  container). Wrote a pure-stdlib PNG decoder/encoder (zlib + struct)
+  and a pure-Python box-blur recoloring path, verified against all 26
+  source icons' actual format first; PIL/numpy now used only as an
+  optional speedup when present. Verified with PIL force-disabled
+  end-to-end (see section 37).
+- **World Map**: hide/show toggle for the placement preview pin;
+  default preview icon changed to Waypoint Pin (Common) (see
+  section 38).
+- **Weapon/Armor/Item "Sources & Crafting" panels**: new
+  `item_sources` pipeline section combines Recipes/Chests/Drops/Shops
+  into one per-item cross-reference (recipe+cost+materials, shop,
+  chest locations, monster drops, used-as-material-in), shown in all
+  three item preview panels via a shared renderer. 303/345 items have
+  a known source; 42 explicitly say they don't (see section 38).
+  Icons next to every listed item, and long lists use an inline
+  "+N more" expander instead of nested scrollboxes (see section 39).
+- **World Map chest contents**: Field Map area view now shows each
+  chest's actual resolved contents (icon, name, quantity, share %),
+  not just chest IDs — reuses the Chests section's own resolved pools
+  as the single source (see section 39). RESOLVED regression: the
+  chest list vanished entirely on any instance with a stale
+  WorldMap.json (no fallback for the old field shape) — now falls
+  back to the bare-ID list with an explicit "re-run the build" note
+  instead of silently disappearing (see section 40).
 - **Read-only REST API** (`/api`): static resource tree
   (`tools/build_api.py`, standalone) + live Express router
   (`api/routes.js`, one-line mount) + `APIRouting.md` full spec.

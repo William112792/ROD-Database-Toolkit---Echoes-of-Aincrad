@@ -306,6 +306,7 @@ const EquipmentBrowserView = {
 
         ${this.renderShieldCompatNote(armor)}
         ${this.renderModCalloutForArmor(armor)}
+        ${renderItemSourcesPanelHtml(armor.itemKey)}
       </div>
     `;
 

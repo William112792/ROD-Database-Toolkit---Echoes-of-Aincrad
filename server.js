@@ -899,6 +899,106 @@ app.post("/api/guides/:id/images", (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------
+// Manual Map Markers API
+//
+// USER content, like Guides: manually-placed pins on the World Map's
+// Field Map / Towns / Dungeons / World View surfaces, for exactly the
+// places this toolkit has NO exported coordinate data (Towns and
+// Dungeons entirely; extra hand-placed detail on Field Map areas).
+// Lives outside the pipeline on purpose -- map-markers/ sits at the
+// project root next to guides/, never touched by build_pipeline.py.
+//
+// One manifest file per map surface: map-markers/<mapType>__<areaKey>.json,
+// a plain array of {id, iconKey, x, y, label, createdAt}. x/y are
+// NORMALIZED 0.0-1.0 scalers against that surface's own image/canvas --
+// deliberately not world coordinates, so the same entry shape works
+// for Field Map areas (which have world coords) and Towns/Dungeons
+// (which never will) alike. Capped at 999 entries per manifest, per
+// the requested limit.
+// ----------------------------------------------------------------------
+const MAP_MARKERS_DIR = path.join(PROJECT_ROOT, "map-markers");
+const MAP_MARKERS_MAX_PER_AREA = 999;
+const MAP_MARKER_TYPES = ["field", "world", "town", "dungeon"];
+
+function sanitizeMarkerAreaKey(key) {
+  return typeof key === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(key) ? key : null;
+}
+
+function markerManifestPath(mapType, areaKey) {
+  if (!MAP_MARKER_TYPES.includes(mapType)) return null;
+  const safeKey = sanitizeMarkerAreaKey(areaKey);
+  if (!safeKey) return null;
+  return path.join(MAP_MARKERS_DIR, `${mapType}__${safeKey}.json`);
+}
+
+function loadMarkerManifest(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+app.get("/api/map-markers/:mapType/:areaKey", (req, res) => {
+  const filePath = markerManifestPath(req.params.mapType, req.params.areaKey);
+  if (!filePath) return res.status(400).json({ error: "Invalid map type or area key" });
+  const entries = loadMarkerManifest(filePath);
+  res.json({ entries, count: entries.length, max: MAP_MARKERS_MAX_PER_AREA });
+});
+
+app.post("/api/map-markers/:mapType/:areaKey", (req, res) => {
+  const filePath = markerManifestPath(req.params.mapType, req.params.areaKey);
+  if (!filePath) return res.status(400).json({ error: "Invalid map type or area key" });
+
+  const { iconKey, x, y, label } = req.body || {};
+  if (typeof iconKey !== "string" || !iconKey.trim()) {
+    return res.status(400).json({ error: "Missing iconKey" });
+  }
+  const nx = Number(x), ny = Number(y);
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) {
+    return res.status(400).json({ error: "x and y must be numbers between 0 and 1 (normalized position on the map surface)" });
+  }
+
+  try {
+    if (!fs.existsSync(MAP_MARKERS_DIR)) fs.mkdirSync(MAP_MARKERS_DIR, { recursive: true });
+    const entries = loadMarkerManifest(filePath);
+    if (entries.length >= MAP_MARKERS_MAX_PER_AREA) {
+      return res.status(409).json({ error: `Marker limit reached for this map (${MAP_MARKERS_MAX_PER_AREA})` });
+    }
+    const entry = {
+      id: `mk_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      iconKey: iconKey.trim(),
+      x: nx,
+      y: ny,
+      label: typeof label === "string" ? label.slice(0, 200) : "",
+      createdAt: new Date().toISOString(),
+    };
+    entries.push(entry);
+    fs.writeFileSync(filePath, JSON.stringify(entries, null, 2));
+    res.json({ ok: true, entry, count: entries.length, max: MAP_MARKERS_MAX_PER_AREA });
+  } catch (e) {
+    guideFsErrorResponse(res, e);
+  }
+});
+
+app.delete("/api/map-markers/:mapType/:areaKey/:entryId", (req, res) => {
+  const filePath = markerManifestPath(req.params.mapType, req.params.areaKey);
+  if (!filePath) return res.status(400).json({ error: "Invalid map type or area key" });
+  try {
+    const entries = loadMarkerManifest(filePath);
+    const filtered = entries.filter((e) => e.id !== req.params.entryId);
+    if (filtered.length === entries.length) return res.status(404).json({ error: "Marker not found" });
+    fs.writeFileSync(filePath, JSON.stringify(filtered, null, 2));
+    res.json({ ok: true, count: filtered.length, max: MAP_MARKERS_MAX_PER_AREA });
+  } catch (e) {
+    guideFsErrorResponse(res, e);
+  }
+});
+
+
 // Read-only REST API layer (isolated file, see api/routes.js) --
 // deleting api/routes.js removes only this line's effect; nothing
 // else in this file depends on it.
