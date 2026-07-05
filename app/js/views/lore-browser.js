@@ -36,7 +36,7 @@ const LoreBrowserView = {
     wrap.innerHTML = `
       <div class="coverage-banner" id="loreQuickCoverage"></div>
       <div class="toolbar" id="loreToolbar"></div>
-      <div class="equip-layout" style="grid-template-columns: 360px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 360px;">
         <div id="loreListPane"></div>
         <div id="loreDetailPane"></div>
       </div>

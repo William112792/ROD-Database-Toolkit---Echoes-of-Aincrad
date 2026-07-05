@@ -35,6 +35,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const archiver = require("archiver");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -73,6 +74,15 @@ function runPipeline(args) {
     proc.stdout.on("data", (d) => { stdout += d.toString(); });
     proc.stderr.on("data", (d) => { stderr += d.toString(); });
     proc.on("close", (code) => resolve({ code, stdout, stderr }));
+    // Without this, a missing `python3` binary emits an 'error' event
+    // with no listener -- Node's default behavior for an unhandled
+    // 'error' event is to THROW, crashing the entire server process,
+    // not just fail this one request. Confirmed as a real, live crash
+    // (a different missing binary, `zip`, but the exact same pattern)
+    // from a real deployment's own server logs. Every spawn() call in
+    // this file needs this same guard, not just the one that happened
+    // to be reported first.
+    proc.on("error", (err) => resolve({ code: -1, stdout, stderr: `Failed to start python3: ${err.message}` }));
   });
 }
 
@@ -208,7 +218,16 @@ function findLatestMappingFile(type) {
  * so this just passes it through -- no re-wrapping.
  */
 app.get("/api/pipeline/status", async (req, res) => {
-  const result = await runPipeline(["--status"]);
+  // Cached by default: the real status check re-runs every section
+  // (that's what makes its Schema check honest), which by 44 sections
+  // + the Maps/DNG level scans takes minutes -- serving it
+  // synchronously on page load produced a real 500/504 from a real
+  // deployment. --status-cached returns the last computed report
+  // instantly (tagged cached:true + generatedAt); fresh checks run as
+  // a background job via /api/pipeline/refresh-status below, which
+  // rewrites the cache on completion.
+  const fresh = req.query.fresh === "1";
+  const result = await runPipeline([fresh ? "--status" : "--status-cached"]);
   if (result.code !== 0) {
     return res.status(500).json({ error: "Pipeline status check failed to run", stderr: result.stderr });
   }
@@ -221,22 +240,130 @@ app.get("/api/pipeline/status", async (req, res) => {
 });
 
 /**
- * POST /api/pipeline/rebuild
- * Body: { onlyKey?: string, fromKey?: string } -- both optional; with
- * neither, runs the full pipeline (same as `python3 build_pipeline.py`
- * with no flags). Streams nothing fancy -- runs to completion, then
- * returns the full stdout/stderr and exit code in one response, since
- * a full rebuild only takes a few seconds (confirmed throughout this
- * project's own development).
+ * POST /api/pipeline/refresh-status
+ * Starts a fresh, full status computation (`--status`) as a background
+ * job through the same single-job machinery rebuilds use (409 if any
+ * job is running). The pipeline saves the fresh report to its status
+ * cache on completion, so the dashboard just polls
+ * /api/pipeline/rebuild-progress and then re-fetches the (now updated)
+ * cached /api/pipeline/status.
  */
-app.post("/api/pipeline/rebuild", async (req, res) => {
-  const { onlyKey, fromKey } = req.body || {};
-  const args = [];
-  if (onlyKey) args.push(`--only=${onlyKey}`);
-  else if (fromKey) args.push(`--from=${fromKey}`);
+app.post("/api/pipeline/refresh-status", (req, res) => {
+  if (currentBuildJob && currentBuildJob.running) {
+    return res.status(409).json({
+      error: "A build is already running",
+      jobId: currentBuildJob.id,
+      mode: currentBuildJob.mode,
+      startedAt: currentBuildJob.startedAt,
+    });
+  }
+  const job = startBuildJob(["--status"], "status-refresh");
+  res.json({ ok: true, started: true, jobId: job.id, mode: job.mode, startedAt: job.startedAt });
+});
 
-  const result = await runPipeline(args);
-  res.json({ ok: result.code === 0, exitCode: result.code, stdout: result.stdout, stderr: result.stderr });
+/**
+ * POST /api/pipeline/rebuild
+ * Body: { onlyKey?: string, fromKey?: string, groupKey?: string } --
+ * all optional; with none, runs the full pipeline.
+ *
+ * NO LONGER runs to completion inside the request. The original
+ * implementation did ("a full rebuild only takes a few seconds --
+ * confirmed throughout this project's own development"), and that was
+ * true when it was written; by 44 sections plus the Maps/DNG level
+ * scans, a full run takes minutes and the blocking request produced a
+ * real 504 from a real deployment. Rebuilds now start a background
+ * job and return immediately; the dashboard polls
+ * /api/pipeline/rebuild-progress for the live log and completion.
+ * Only ONE job runs at a time -- a second request while one is
+ * running gets a 409 with the running job's id, never a silent queue
+ * or a second concurrent pipeline racing the first over the same
+ * output files.
+ */
+let currentBuildJob = null; // { id, args, mode, startedAt, log, running, exitCode, finishedAt }
+
+function startBuildJob(args, mode) {
+  const job = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    args,
+    mode,
+    startedAt: new Date().toISOString(),
+    log: "",
+    running: true,
+    exitCode: null,
+    finishedAt: null,
+  };
+  // -u: unbuffered Python stdout, so the polled log is genuinely live
+  // rather than arriving in one flush at process exit.
+  const proc = spawn("python3", ["-u", PIPELINE_SCRIPT, ...args], { cwd: PROJECT_ROOT });
+  const append = (d) => {
+    job.log += d.toString();
+    // Cap in-memory log: keep the newest chunk. 200k chars is far more
+    // than a full run prints; this is belt-and-braces, not a limit
+    // anyone should hit.
+    if (job.log.length > 200000) job.log = job.log.slice(-150000);
+  };
+  proc.stdout.on("data", append);
+  proc.stderr.on("data", append);
+  proc.on("close", (code) => {
+    job.running = false;
+    job.exitCode = code;
+    job.finishedAt = new Date().toISOString();
+  });
+  // Same unhandled-'error'-event crash guard every spawn() in this
+  // file carries (see runPipeline above for the confirmed incident).
+  proc.on("error", (err) => {
+    job.running = false;
+    job.exitCode = -1;
+    job.finishedAt = new Date().toISOString();
+    job.log += `Failed to start python3: ${err.message}\n`;
+  });
+  currentBuildJob = job;
+  return job;
+}
+
+app.post("/api/pipeline/rebuild", async (req, res) => {
+  if (currentBuildJob && currentBuildJob.running) {
+    return res.status(409).json({
+      error: "A build is already running",
+      jobId: currentBuildJob.id,
+      mode: currentBuildJob.mode,
+      startedAt: currentBuildJob.startedAt,
+    });
+  }
+  const { onlyKey, fromKey, groupKey } = req.body || {};
+  const args = [];
+  let mode = "full";
+  if (groupKey) { args.push(`--group=${groupKey}`); mode = `group:${groupKey}`; }
+  else if (onlyKey) { args.push(`--only=${onlyKey}`); mode = `only:${onlyKey}`; }
+  else if (fromKey) { args.push(`--from=${fromKey}`); mode = `from:${fromKey}`; }
+
+  const job = startBuildJob(args, mode);
+  res.json({ ok: true, started: true, jobId: job.id, mode: job.mode, startedAt: job.startedAt });
+});
+
+/**
+ * GET /api/pipeline/rebuild-progress
+ * Snapshot of the current (or most recently finished) build job:
+ * { running, jobId, mode, startedAt, finishedAt, exitCode, log }.
+ * The log is the full captured stdout+stderr (capped, newest kept) --
+ * the dashboard tails it live while running and shows the final
+ * output on completion, exactly what the old synchronous response
+ * used to contain, just poll-shaped.
+ */
+app.get("/api/pipeline/rebuild-progress", (req, res) => {
+  if (!currentBuildJob) {
+    return res.json({ running: false, jobId: null });
+  }
+  const j = currentBuildJob;
+  res.json({
+    running: j.running,
+    jobId: j.id,
+    mode: j.mode,
+    startedAt: j.startedAt,
+    finishedAt: j.finishedAt,
+    exitCode: j.exitCode,
+    log: j.log,
+  });
 });
 
 /**
@@ -270,7 +397,13 @@ app.post("/api/pipeline/upload-zip", async (req, res) => {
       let out = "";
       proc.stdout.on("data", (d) => { out += d.toString(); });
       proc.on("close", (code) => resolve({ code, out }));
+      proc.on("error", (err) => resolve({ code: -1, out: "", spawnError: err.message }));
     });
+
+    if (listResult.spawnError) {
+      fs.unlinkSync(zipPath);
+      return res.status(500).json({ error: `Server is missing the "unzip" command: ${listResult.spawnError}` });
+    }
 
     if (listResult.code !== 0) {
       fs.unlinkSync(zipPath);
@@ -296,9 +429,14 @@ app.post("/api/pipeline/upload-zip", async (req, res) => {
       proc.stdout.on("data", (d) => { out += d.toString(); });
       proc.stderr.on("data", (d) => { err += d.toString(); });
       proc.on("close", (code) => resolve({ code, out, err }));
+      proc.on("error", (e) => resolve({ code: -1, out: "", err: e.message, spawnError: true }));
     });
 
     fs.unlinkSync(zipPath);
+
+    if (extractResult.spawnError) {
+      return res.status(500).json({ error: `Server is missing the "unzip" command: ${extractResult.err}` });
+    }
 
     if (extractResult.code !== 0) {
       return res.status(500).json({ error: "Extraction failed", details: extractResult.err });
@@ -316,7 +454,29 @@ app.post("/api/pipeline/upload-zip", async (req, res) => {
     // rather than re-walking the filesystem ourselves -- unzip already
     // tells us exactly what it did, line by line.
     const lines = extractResult.out.split("\n").filter((l) => /(inflating|extracting):/i.test(l));
-    const files = lines.map((l) => l.split(/:\s+/)[1]).filter(Boolean).map((f) => f.trim());
+    let files = lines.map((l) => l.split(/:\s+/)[1]).filter(Boolean).map((f) => f.trim());
+
+    // unzip's own log reflects where files were extracted to BEFORE
+    // the merge above ran -- e.g. ".../raw-export/Content/Localization/
+    // Game/de/Game.json", the misplaced pre-merge location, even
+    // though the actual file has since been moved to
+    // ".../Content/ROD/Localization/Game/de/Game.json". Reporting the
+    // stale path here was a real, confirmed bug: the frontend's
+    // "Unrecognized Files" check matches each reported path against
+    // every section's known rawInputs patterns, which are relative to
+    // Content/ROD/ -- a stale Content/Localization/... path (missing
+    // the /ROD/ segment) could never match, so every Localization file
+    // showed up as unrecognized on every single upload, despite having
+    // already been correctly repositioned by the merge two lines above.
+    // Rewritten here to match reality for every folder the merge
+    // actually touched, not just Localization/WwiseAudio by name --
+    // if mergeMisplacedContentSiblings() is ever extended to handle
+    // another misplaced sibling later, this stays correct automatically.
+    for (const name of movedFolders) {
+      const stalePrefix = `${path.sep}Content${path.sep}${name}${path.sep}`;
+      const correctedPrefix = `${path.sep}Content${path.sep}ROD${path.sep}${name}${path.sep}`;
+      files = files.map((f) => f.includes(stalePrefix) ? f.replace(stalePrefix, correctedPrefix) : f);
+    }
 
     res.json({ ok: true, fileCount: files.length, files: files.slice(0, 200), movedFolders });
   } catch (e) {
@@ -389,44 +549,52 @@ app.post("/api/pipeline/upload-files", async (req, res) => {
  * separate top-level siblings; this endpoint reproduces THIS project's
  * own working copy faithfully, not a byte-for-byte reconstruction of
  * whatever the original upload's exact folder layout happened to be)
- * and streams it back as a download. Shells out to the same `zip` CLI
- * already used for nothing else in this file (uploads use `unzip`) --
- * no new npm dependency, consistent with how upload-zip avoids one too.
+ * and streams it back as a download.
+ *
+ * Uses the `archiver` npm package, NOT the `zip` CLI binary. This
+ * used to shell out to `zip -r` -- deliberately avoiding a new npm
+ * dependency, the same reasoning `unzip` still uses for uploads. That
+ * reasoning turned out to be wrong for THIS specific case: `zip`
+ * isn't guaranteed to be present in every deployment's container
+ * image (confirmed by a real crash report -- `Error: spawn zip
+ * ENOENT` -- from an actual Docker deployment missing it). Worse,
+ * the original code had no 'error' listener on the spawned process,
+ * so a missing binary didn't just fail this one request -- Node's
+ * default behavior for an unhandled 'error' event on an EventEmitter
+ * is to THROW, which crashed the entire server process for every
+ * user, not just whoever clicked download. `archiver` is pure JS with
+ * no external binary dependency at all, so this failure mode can't
+ * happen anymore for this endpoint, in any environment. It also
+ * streams straight into the HTTP response instead of writing a full
+ * temp file to disk first, which is both simpler and more memory-
+ * appropriate for an archive that can run several hundred MB.
  */
 app.get("/api/pipeline/download-zip", async (req, res) => {
-  if (!fs.existsSync(path.join(PROJECT_ROOT, "raw-export", "Content"))) {
+  const contentRoot = path.join(PROJECT_ROOT, "raw-export", "Content");
+  if (!fs.existsSync(contentRoot)) {
     return res.status(404).json({ error: "raw-export/Content/ does not exist -- nothing to download" });
   }
 
-  fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
-  const zipPath = path.join(UPLOAD_TMP_DIR, `Content-export-${Date.now()}.zip`);
+  res.attachment("Content.zip");
+  res.setHeader("Content-Type", "application/zip");
 
-  const zipResult = await new Promise((resolve) => {
-    // -r recursive, -q quiet (no per-file listing needed here, unlike
-    // upload-zip's extraction where we parse that listing for the
-    // response). cwd is raw-export/ so the archive's own internal
-    // paths start at "Content/...", matching the Content.zip naming
-    // and layout convention every prior upload in this project used.
-    const proc = spawn("zip", ["-r", "-q", zipPath, "Content"], { cwd: path.join(PROJECT_ROOT, "raw-export") });
-    let err = "";
-    proc.stderr.on("data", (d) => { err += d.toString(); });
-    proc.on("close", (code) => resolve({ code, err }));
-  });
-
-  if (zipResult.code !== 0 || !fs.existsSync(zipPath)) {
-    return res.status(500).json({ error: "Failed to create ZIP", details: zipResult.err });
-  }
-
-  res.download(zipPath, "Content.zip", (err) => {
-    // res.download streams the file then calls this once done (or on
-    // error) -- clean up the temp file either way, regardless of
-    // whether the download itself succeeded, so .upload-tmp/ doesn't
-    // accumulate every export a user ever downloaded.
-    fs.unlink(zipPath, () => {});
-    if (err && !res.headersSent) {
-      res.status(500).json({ error: "Download failed", details: err.message });
+  const archive = archiver("zip", { zlib: { level: 6 } }); // moderate compression -- balances speed against size for an archive this large
+  archive.on("error", (err) => {
+    // If streaming has already started, headers are sent and we can't
+    // switch to a JSON error response anymore -- just end the
+    // response. The client sees a truncated download rather than a
+    // clean error in that case, but critically the SERVER doesn't go
+    // down over it, which is the actual bug this replaces.
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to create ZIP", details: err.message });
+    } else {
+      res.end();
     }
   });
+
+  archive.pipe(res);
+  archive.directory(contentRoot, "Content");
+  archive.finalize();
 });
 
 /**
@@ -506,6 +674,235 @@ app.get("/api/mapping-files/download/:type", (req, res) => {
   }
   res.download(found.fullPath, found.filename);
 });
+
+// ----------------------------------------------------------------------
+// Modding Guides API
+//
+// USER content, not derived game data -- guides live OUTSIDE the
+// pipeline on purpose (no pipeline section builds or overwrites them):
+//   guides/            *.md files, one per guide
+//   guides/manifest.json   configurable limits (see DEFAULT_GUIDE_CONFIG)
+//   uploads/<guideId>/     images pasted/dropped into that guide
+// Both folders sit under the statically-served project root, so a
+// guide's MD references its images with plain relative URLs
+// (uploads/<guideId>/<file>) and the browser just fetches them.
+// ----------------------------------------------------------------------
+const GUIDES_DIR = path.join(PROJECT_ROOT, "guides");
+const GUIDE_UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
+
+// Every limit is a plain number in guides/manifest.json, editable by
+// hand to any value -- these are only the defaults written when no
+// manifest exists yet. allowEditing=false turns the whole section
+// read-only (no create/edit/delete/image-upload; browsing still works).
+const DEFAULT_GUIDE_CONFIG = {
+  maxGuides: 20,
+  maxImagesPerGuide: 20,
+  maxImageSizeMB: 25,
+  maxGuideFileSizeMB: 10,
+  allowEditing: true,
+};
+
+function loadGuideConfig() {
+  const manifestPath = path.join(GUIDES_DIR, "manifest.json");
+  try {
+    if (!fs.existsSync(GUIDES_DIR)) fs.mkdirSync(GUIDES_DIR, { recursive: true });
+    if (!fs.existsSync(GUIDE_UPLOADS_DIR)) fs.mkdirSync(GUIDE_UPLOADS_DIR, { recursive: true });
+    if (!fs.existsSync(manifestPath)) {
+      fs.writeFileSync(manifestPath, JSON.stringify(DEFAULT_GUIDE_CONFIG, null, 2));
+      return { ...DEFAULT_GUIDE_CONFIG };
+    }
+    // Merge over defaults so a hand-edited manifest missing a key
+    // still behaves sanely instead of turning a limit into undefined.
+    return { ...DEFAULT_GUIDE_CONFIG, ...JSON.parse(fs.readFileSync(manifestPath, "utf-8")) };
+  } catch (e) {
+    return { ...DEFAULT_GUIDE_CONFIG };
+  }
+}
+
+// Filesystem errors in the guide endpoints (EACCES from a real Docker
+// deployment where /home/node/app was root-owned while node ran
+// unprivileged) used to escape as unhandled throws -- raw stack traces
+// in the log and bare 500s to the client. Every write path now runs
+// through this instead: a clean JSON error naming the actual fix
+// (run the "Modding Guides Init" focus build where the filesystem is
+// writable, or chown/mount guides/ + uploads/ for the node user).
+function guideFsErrorResponse(res, e) {
+  if (e && (e.code === "EACCES" || e.code === "EPERM" || e.code === "EROFS")) {
+    return res.status(500).json({
+      error: `The server user cannot write to the guides storage (${e.code}). ` +
+        `In Docker: chown the app directory (or mount guides/ and uploads/ as writable volumes) ` +
+        `for the user node runs as, or run the "Modding Guides Init" focus build ` +
+        `(Build Dashboard, or: python3 tools/build_pipeline.py --group=guides) in a context that can write.`,
+      code: e.code,
+    });
+  }
+  return res.status(500).json({ error: `Guide storage error: ${e.message}`, code: e.code || null });
+}
+
+// Guide ids are slugs derived from the title at creation and STABLE
+// afterwards (renaming the title inside the MD doesn't move the file).
+// Strict allowlist everywhere an id arrives from the client -- the id
+// becomes a filesystem path component in two places.
+function sanitizeGuideId(id) {
+  return typeof id === "string" && /^[a-z0-9][a-z0-9-]{0,80}$/.test(id) ? id : null;
+}
+
+function slugifyTitle(title) {
+  const base = String(title || "untitled").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "untitled";
+  let slug = base, n = 2;
+  while (fs.existsSync(path.join(GUIDES_DIR, `${slug}.md`))) {
+    slug = `${base}-${n++}`;
+  }
+  return slug;
+}
+
+function guideTitleFromContent(content, fallback) {
+  const m = /^#\s+(.+)$/m.exec(content || "");
+  return (m ? m[1].trim() : "") || fallback;
+}
+
+function listGuides() {
+  if (!fs.existsSync(GUIDES_DIR)) return [];
+  return fs.readdirSync(GUIDES_DIR)
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => {
+      const id = f.slice(0, -3);
+      const full = path.join(GUIDES_DIR, f);
+      const stat = fs.statSync(full);
+      const content = fs.readFileSync(full, "utf-8");
+      const imgDir = path.join(GUIDE_UPLOADS_DIR, id);
+      const imageCount = fs.existsSync(imgDir)
+        ? fs.readdirSync(imgDir).filter((x) => !x.startsWith(".")).length
+        : 0;
+      return {
+        id,
+        title: guideTitleFromContent(content, id),
+        updatedAt: stat.mtime.toISOString(),
+        sizeBytes: stat.size,
+        imageCount,
+      };
+    })
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+app.get("/api/guides", (req, res) => {
+  const config = loadGuideConfig();
+  res.json({ config, guides: listGuides() });
+});
+
+app.get("/api/guides/:id", (req, res) => {
+  const id = sanitizeGuideId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid guide id" });
+  const full = path.join(GUIDES_DIR, `${id}.md`);
+  if (!fs.existsSync(full)) return res.status(404).json({ error: "Guide not found" });
+  const content = fs.readFileSync(full, "utf-8");
+  res.json({ id, title: guideTitleFromContent(content, id), content });
+});
+
+app.post("/api/guides", (req, res) => {
+  const config = loadGuideConfig();
+  if (!config.allowEditing) return res.status(403).json({ error: "Editing is disabled in guides/manifest.json (allowEditing: false)" });
+  const existing = listGuides();
+  if (existing.length >= config.maxGuides) {
+    return res.status(409).json({ error: `Guide limit reached (${config.maxGuides} — configurable in guides/manifest.json)` });
+  }
+  const { title, content } = req.body || {};
+  const text = typeof content === "string" ? content : `# ${title || "Untitled Guide"}\n\n`;
+  if (Buffer.byteLength(text, "utf-8") > config.maxGuideFileSizeMB * 1024 * 1024) {
+    return res.status(413).json({ error: `Guide exceeds ${config.maxGuideFileSizeMB} MB (configurable in guides/manifest.json)` });
+  }
+  try {
+    loadGuideConfig(); // ensures folders exist
+    const id = slugifyTitle(title || guideTitleFromContent(text, "untitled"));
+    fs.writeFileSync(path.join(GUIDES_DIR, `${id}.md`), text);
+    res.json({ ok: true, id, title: guideTitleFromContent(text, id) });
+  } catch (e) {
+    guideFsErrorResponse(res, e);
+  }
+});
+
+app.put("/api/guides/:id", (req, res) => {
+  const config = loadGuideConfig();
+  if (!config.allowEditing) return res.status(403).json({ error: "Editing is disabled in guides/manifest.json (allowEditing: false)" });
+  const id = sanitizeGuideId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid guide id" });
+  const full = path.join(GUIDES_DIR, `${id}.md`);
+  if (!fs.existsSync(full)) return res.status(404).json({ error: "Guide not found" });
+  const { content } = req.body || {};
+  if (typeof content !== "string") return res.status(400).json({ error: "Missing content" });
+  if (Buffer.byteLength(content, "utf-8") > config.maxGuideFileSizeMB * 1024 * 1024) {
+    return res.status(413).json({ error: `Guide exceeds ${config.maxGuideFileSizeMB} MB (configurable in guides/manifest.json)` });
+  }
+  try {
+    fs.writeFileSync(full, content);
+    res.json({ ok: true, id, title: guideTitleFromContent(content, id) });
+  } catch (e) {
+    guideFsErrorResponse(res, e);
+  }
+});
+
+app.delete("/api/guides/:id", (req, res) => {
+  const config = loadGuideConfig();
+  if (!config.allowEditing) return res.status(403).json({ error: "Editing is disabled in guides/manifest.json (allowEditing: false)" });
+  const id = sanitizeGuideId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid guide id" });
+  const full = path.join(GUIDES_DIR, `${id}.md`);
+  if (!fs.existsSync(full)) return res.status(404).json({ error: "Guide not found" });
+  try {
+    fs.unlinkSync(full);
+    const imgDir = path.join(GUIDE_UPLOADS_DIR, id);
+    if (fs.existsSync(imgDir)) fs.rmSync(imgDir, { recursive: true, force: true });
+    res.json({ ok: true });
+  } catch (e) {
+    guideFsErrorResponse(res, e);
+  }
+});
+
+/**
+ * POST /api/guides/:id/images
+ * Body: { filename, dataBase64 } -- the editor sends pasted/dropped
+ * images here, then inserts the returned relative URL at the cursor.
+ * Extension is derived from the client filename but allowlisted;
+ * stored names are server-generated (img_<timestamp>.<ext>), never the
+ * client's name, so the only client-controlled path piece is the
+ * already-sanitized guide id.
+ */
+app.post("/api/guides/:id/images", (req, res) => {
+  const config = loadGuideConfig();
+  if (!config.allowEditing) return res.status(403).json({ error: "Editing is disabled in guides/manifest.json (allowEditing: false)" });
+  const id = sanitizeGuideId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid guide id" });
+  if (!fs.existsSync(path.join(GUIDES_DIR, `${id}.md`))) return res.status(404).json({ error: "Guide not found" });
+
+  const { filename, dataBase64 } = req.body || {};
+  if (typeof dataBase64 !== "string" || !dataBase64) return res.status(400).json({ error: "Missing image data" });
+  const ext = String(filename || "").toLowerCase().match(/\.(png|jpg|jpeg|gif|webp)$/);
+  const safeExt = ext ? ext[1] : "png";
+
+  const buf = Buffer.from(dataBase64, "base64");
+  if (buf.length > config.maxImageSizeMB * 1024 * 1024) {
+    return res.status(413).json({ error: `Image exceeds ${config.maxImageSizeMB} MB (configurable in guides/manifest.json)` });
+  }
+  try {
+    const imgDir = path.join(GUIDE_UPLOADS_DIR, id);
+    if (!fs.existsSync(imgDir)) fs.mkdirSync(imgDir, { recursive: true });
+    const existing = fs.readdirSync(imgDir).filter((x) => !x.startsWith(".")).length;
+    if (existing >= config.maxImagesPerGuide) {
+      return res.status(409).json({ error: `Image limit reached for this guide (${config.maxImagesPerGuide} — configurable in guides/manifest.json)` });
+    }
+    const name = `img_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}.${safeExt}`;
+    fs.writeFileSync(path.join(imgDir, name), buf);
+    res.json({ ok: true, url: `uploads/${id}/${name}`, imageCount: existing + 1 });
+  } catch (e) {
+    guideFsErrorResponse(res, e);
+  }
+});
+
+// Read-only REST API layer (isolated file, see api/routes.js) --
+// deleting api/routes.js removes only this line's effect; nothing
+// else in this file depends on it.
+app.use("/api", require("./api/routes")(PROJECT_ROOT));
 
 // Serve everything in this folder as static files (index.html, app/, Content/).
 // No caching surprises during active data updates -- the dataset is small

@@ -81,6 +81,122 @@ const CoverageReportView = {
       </div>
 
       <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>Monster Spawn &amp; Drop Coverage</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          <b>Spawns</b> come from the three populated per-world tables under
+          <code>DataAssets/WorldAdmin/</code>: the chain is
+          <code>DT_SocketPopTable</code> (${(DataStore.spawnIndex && DataStore.spawnIndex.popCount) || 0} pop configs: wave counts/delays) →
+          <code>DT_CharacterGroupLotTable</code> (${(DataStore.spawnIndex && DataStore.spawnIndex.lotCount) || 0} weighted lotteries) →
+          <code>DT_CharacterGroupTable</code> (${(DataStore.spawnIndex && DataStore.spawnIndex.groupCount) || 0} compositions).
+          <code>DT_InitPopAreaTable_WL01/02</code> were confirmed to have ZERO rows back when
+          Areas was scoped and are deliberately not used. Enemy Blueprint classes resolve to the
+          Monster database via the confirmed <code>E{code}</code> ↔ <code>EnemyName_{code}</code>
+          link — ${(DataStore.spawnIndex && DataStore.spawnIndex.distinctEnemyCodes) || 0} distinct codes appear in
+          compositions, ${(DataStore.spawnIndex && DataStore.spawnIndex.codesWithDatabaseName) || 0} of which have a database
+          name; the rest (plus named animal classes like <code>BP_Rabbit_C</code>) are shown by
+          class, never guessed.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Update:</b> this section originally recorded per-enemy Level/PopNum as
+          <code>-1</code> ("inherit/default") in ${(DataStore.spawnIndex && DataStore.spawnIndex.levelDefaultSlots) || 0} of
+          ${((DataStore.spawnIndex && DataStore.spawnIndex.levelDefaultSlots) || 0) + ((DataStore.spawnIndex && DataStore.spawnIndex.levelSetSlots) || 0)} composition
+          slots with no way to resolve it, because this export contained NO
+          <code>Blueprints/</code> folder at the time. <b>A later asset export added one</b> —
+          each enemy's own default level, HP/Attack/Defence curves, and per-difficulty reward
+          links now live in their own tab, <b>Monsters &gt; Stats</b> (see below), joined by the
+          same confirmed <code>E{'{code}'}</code> link. This table's OWN Level field still shows
+          <code>-1</code> here, unchanged — that's genuinely what <code>DT_CharacterGroupTable</code>
+          says, and Spawns reports what the spawn table says rather than borrowing a different
+          table's number. The two genuine level-related curves living in THIS table's own scope
+          (<code>CoefFixedLevelExperiencePointCurve</code>: XP coefficient falling from 1.0 to 0.5
+          across the level gap; <code>EnemyLevelCoefDamageCurve</code>: flat 1.0 damage
+          coefficient across levels 1–100 in this snapshot) are still exported into the Spawns
+          index for reference. Spawn PLACEMENT geometry is also mostly absent from the exported
+          levels (4 <code>RODInitPopAreaVolume</code> + 36 <code>RODSpawnPointsComponent</code>
+          actors in all of Maps/) — Spawns is the spawn logic, deliberately not a spawn map.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Drops</b> chain <code>DT_RewardLotTable</code>
+          (${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.rewardCount) || 0} reward rows, incl. explicit "no drop"
+          entries) into <code>DT_ItemLotTable</code>
+          (${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.poolTotal) || 0} pools, of which
+          ${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.poolsReferencedByRewards) || 0} are referenced by rewards — the
+          rest serve other systems like chests/gathering/quests, future sections).
+          ${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.monsterLinked) || 0} rewards are monster-linked via the
+          enemy-code rule only; named keys like <code>Boar01</code> stay UNLINKED because a
+          name-similarity guess is exactly that. Item names resolve from the data's real
+          <code>ItemKey</code> for equipment and the verified <code>ItemName_{Cat}_{Id}</code>
+          pattern otherwise; <code>Cost</code>/<code>Col</code>/<code>Invalid</code> slots
+          (${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.unresolvedItemSlots) || 0} of them) resolve to nothing by either
+          route and are shown raw. Every percentage in the Drops tab is a weight-derived share
+          of its own pool's total, labeled as derived — the tables store weights, not printed
+          drop rates.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.spawnIndex && DataStore.spawnIndex.groupCount) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">spawn groups</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(DataStore.spawnIndex && DataStore.spawnIndex.popCount) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">pop configs</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.rewardCount) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">reward rows</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.monsterLinked) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">monster-linked rewards</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-stamina);">${(DataStore.monsterDropIndex && DataStore.monsterDropIndex.poolsReferencedByRewards) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">item pools referenced</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>Monster Stats Coverage (Monsters &gt; Stats)</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          Unlocked by a later <code>Blueprints/</code> asset export, joined by the same confirmed
+          <code>E{'{code}'}</code> ↔ <code>EnemyName_{'{code}'}</code> link Spawns and Drops use.
+          Each enemy's <code>Default__BP_E{'{code}'}_C</code> object supplies EnemyLevel (what
+          Spawns' <code>-1</code> "inherit" resolves to for that enemy), EnemyType,
+          AttackPower/DefencePower, WeaponExperiencePoint, and per-difficulty
+          DifficultyLevelRewardLotKeys — CONFIRMED real keys in <code>DT_RewardLotTable</code>
+          (checked directly), a richer per-difficulty drops link than the reward-key inference
+          Drops uses today (not yet wired into Drops itself). A per-enemy
+          <code>CT_E{'{code}'}</code> curve table supplies real level curves (levels 1–301) for
+          MaxHealth, MaxStability, AttackPower, DefencePower, ExperiencePoint,
+          PartyExperiencePoint, WeaponExperiencePoint, and Col.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          ${(DataStore.monsterStatsIndex && DataStore.monsterStatsIndex.count) || 0} of the export's enemy Blueprints
+          have stats cataloged; ${(DataStore.monsterStatsIndex && DataStore.monsterStatsIndex.withCurve) || 0} of those
+          also have a curve table (5 are missing theirs — listed in the index, not
+          interpolated). This does NOT change what Monsters &gt; Spawns displays: that tab's
+          <code>-1</code> is literally what <code>DT_CharacterGroupTable</code> says, and keeps
+          saying so — Stats shows the enemy's OWN Blueprint default instead, and the two are
+          allowed to differ.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.monsterStatsIndex && DataStore.monsterStatsIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">enemy Blueprints cataloged</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(DataStore.monsterStatsIndex && DataStore.monsterStatsIndex.withCurve) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with a level curve (1–301)</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${(DataStore.monsterStatsIndex && DataStore.monsterStatsIndex.families && DataStore.monsterStatsIndex.families.length) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">enemy families</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
         <h3>Item Coverage</h3>
         <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
           The Items section's list comes from <code>DT_ItemDatabase.json</code> (the in-game
@@ -138,6 +254,56 @@ const CoverageReportView = {
           same explanation.
         </p>
         ${this.renderRecipeCategoryBreakdown()}
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>Shop &amp; Chest Coverage</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          <b>Shops sell recipes — confirmed, not inferred.</b> Every stock entry in
+          <code>DT_ShopItemList.json</code>'s six shops is a Cost-category item, and Cost items
+          turned out to be RECIPE PURCHASE TOKENS: each <code>*Recipe*</code> map in
+          <code>ItemDataAsset</code> defines its recipe's token as
+          <code>{Category: Cost, ItemId: N}</code>, ids globally unique — all
+          ${(DataStore.shopIndex && DataStore.shopIndex.stockTotal) || 0} stock entries resolve 1:1
+          (${(DataStore.shopIndex && DataStore.shopIndex.recipeResolved) || 0} resolved, 0 duplicates, 0 misses). This
+          discovery also retroactively fixed <b>393 previously-unresolvable Cost slots in
+          Monsters &gt; Drops</b> — recipe drops now show their real recipe names (Drops'
+          unresolved slots fell from 419 to 32: Col currency amounts, Invalid, and a handful of
+          armor-recipe keys absent from the tables). <b>Shop→town mapping is deliberately NOT
+          made:</b> six shops and six towns (the same 001-006 numbering DT_NPC uses) is a count
+          match only — no field links them.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Chests</b>: ${(DataStore.chestIndex && DataStore.chestIndex.count) || 0} fixed treasure boxes
+          (<code>DT_FixTBoxTable.json</code> — the FixTBoxTable <code>DA_InGame</code> points
+          at) across ${(DataStore.chestIndex && DataStore.chestIndex.locations) || 0} locations, contents resolved
+          through the SAME shared pool resolver Drops uses (a pool can never resolve differently
+          between the two tabs) — this is where most of the ~900 item pools Drops found
+          unreferenced by monster rewards live. Chest keys are <code>TB_{location}_{n}</code>
+          and the location fragment matches a registered gate's ID after its SA_/WT_ prefix for
+          <b>522 of 526 chests</b> (checked) — joined client-side against the loaded Gates data
+          for location context. No chest placement coordinates exist in the exported levels
+          (searched); ${(DataStore.chestIndex && DataStore.chestIndex.missingPoolRefs) || 0} referenced pool keys are
+          missing from DT_ItemLotTable and listed per chest, not hidden.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.shopIndex && DataStore.shopIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">shops (town unconfirmed)</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${(DataStore.shopIndex && DataStore.shopIndex.recipeResolved) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">stock entries → recipes</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.chestIndex && DataStore.chestIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">fixed treasure boxes</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(DataStore.chestIndex && DataStore.chestIndex.locations) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">locations (522/526 gate-matched)</div>
+          </div>
+        </div>
       </div>
 
       <div class="hud-panel" style="margin-bottom:16px;">
@@ -213,6 +379,260 @@ const CoverageReportView = {
       </div>
 
       <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>Area Coverage</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          World &gt; Areas is the first category with NO data-table list file at all — confirmed
+          by direct search before it was built: no <code>DT_AreaList</code>/<code>DT_AreaDatabase</code>
+          exists anywhere, and <code>DT_InitPopAreaTable_WL01/WL02</code> exist but both have
+          ZERO rows. The authoritative registry is the official localization itself: the 176
+          <code>AreaTitle_*</code> keys in <code>Game.json</code>, confirmed to be an IDENTICAL
+          key set in all 13 languages before being treated as canonical. 82 of the 176 titles
+          are <code>{Rep_DungeonName_*}</code> templates (e.g. "Ancient Ritual Hall: Spirit Gate"),
+          resolved per-language with the same rule Recipes/Lore/Towns/Quests already use.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          3 additional <code>*_SA_02</code> keys are referenced by level files'
+          <code>BP_AreaTitle_Gimmick_Spawner</code> actors but exist in NO language's table —
+          shown flagged ("unofficial key") following Items' "Hand Mirror"
+          referenced-but-missing precedent, so the total is ${(DataStore.areaIndex && DataStore.areaIndex.count) || 0}
+          (${(DataStore.areaIndex && DataStore.areaIndex.officialCount) || 0} official + ${(DataStore.areaIndex && (DataStore.areaIndex.unofficialKeys || []).length) || 0} unofficial).
+          No image exists for any area anywhere in the export (the in-game title is a spawned
+          banner widget, not a stored texture — confirmed by search), so like Monsters there is
+          no thumbnail handling.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Teleport gate links</b> come from <code>DA_InGame.json</code>'s <code>WorldDatas</code>
+          — a per-floor terminal registry (${(DataStore.areaIndex && DataStore.areaIndex.terminalTotal) || 0} gates across floor indexes
+          Dungeon/First/Second), each with an ID, a name key, and a world coordinate. Two link
+          kinds are kept deliberately distinct: <i>destination</i> (the gate's own Key IS the
+          area) and <i>named after area</i> (the gate's display string embeds the area via a
+          template). Gate IDs split into two confirmed families with two separate art sets —
+          <code>SA_*</code> (Safe Area terminals) and <code>WT_*</code> (Warp Terminals).
+          <b>"Golden Gates" remain an OPEN question</b>: the term exists in exactly two official
+          strings (both on item <code>Usable_74</code>, an imperfect Healing Crystal that "can
+          also open Golden Gates"), and nothing in any file is named GoldenGate — whether they
+          are the <code>SA_*</code> gates, a sealed subset of them, or unreleased content is
+          deliberately NOT guessed here; recorded so a future export or in-game confirmation can
+          settle it.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Level placements are a soft dependency:</b> the title-spawner scan reads
+          <code>Maps/</code> and <code>DNG/</code>, which ship in separate
+          <code>Content-Maps.zip</code>/<code>Content-DNG.zip</code> archives from the core
+          Content.zip — their absence doesn't fail the build, and the app distinguishes "not
+          scanned" from "none exist" (${DataStore.areaIndex && DataStore.areaIndex.levelScanAvailable
+            ? `scanned ${DataStore.areaIndex.levelFilesScanned} level files this build`
+            : "NOT scanned in this build — Maps/DNG absent"}).
+          One known unresolved gate name: <code>WT_Mountaintop</code>'s
+          <code>TerminalName_WT_Mountaintop</code> key exists in no language's table — the only
+          gap among the ${(DataStore.areaIndex && DataStore.areaIndex.terminalTotal) || 192} registered gates.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.areaIndex && DataStore.areaIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">total areas</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${DataStore.getAllAreasFlat ? DataStore.getAllAreasFlat().filter(a=>DataStore.isAreaNameVerified(a)).length : 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">named (current language)</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--rank-a);">${(DataStore.areaIndex && DataStore.areaIndex.dungeonLinkedCount) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">dungeon-linked</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(DataStore.areaIndex && DataStore.areaIndex.areasWithTerminals) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with teleport gates</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-stamina);">${(DataStore.areaIndex && DataStore.areaIndex.areasWithSpawners) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with level placements</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>Dungeon &amp; Gate Coverage</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          <b>Dungeons</b> share Areas' registry situation: no data-table list file exists — the
+          17 <code>DungeonName_*</code> keys (identical set in all 13 languages, verified) ARE
+          the list, across 5 families matching the <code>DNG/</code> folder codes
+          (ERU/HFO/HTE/MGK/NTR). Per dungeon the data DOES carry: a gate chain parsed from the
+          <code>{WT|SA}_{code}_F{n}{s|e}</code> ID pattern (${(DataStore.dungeonIndex && DataStore.dungeonIndex.withGates) || 0}/17
+          have one — ERU_OKU/HFO_Ruin/HTE_FI/MGK_Test genuinely have no registered gates), linked
+          areas via the same title templates the Areas tab resolves, quest references, and its
+          slice of <code>DA_InGame.json</code>'s procedural generation config. Generation entries
+          matching NO named dungeon (debug/test/default/common, e.g. <code>HSD_Test*</code>,
+          <code>DBG_Debug</code>, <code>HFO_COMMON_*</code>, and the near-miss
+          <code>NTR_Twilight_*</code> vs <code>NTR_TWI</code> — plausible alias, deliberately NOT
+          assumed) are kept in an unassigned bucket:
+          ${DataStore.dungeonIndex && DataStore.dungeonIndex.generationUnassigned
+            ? `${DataStore.dungeonIndex.generationUnassigned.themes.length} themes / ${DataStore.dungeonIndex.generationUnassigned.ways.length} ways / ${DataStore.dungeonIndex.generationUnassigned.rooms.length} rooms`
+            : "—"} of
+          ${DataStore.dungeonIndex && DataStore.dungeonIndex.generationTotals
+            ? `${DataStore.dungeonIndex.generationTotals.themes} / ${DataStore.dungeonIndex.generationTotals.ways} / ${DataStore.dungeonIndex.generationTotals.rooms}`
+            : "—"} total.
+          DNG/ module levels are a soft dependency (Content-DNG.zip), attributed only by exact
+          path-token match — ${DataStore.dungeonIndex && DataStore.dungeonIndex.dngScanAvailable
+            ? `scanned this build: ${Object.values(DataStore.dungeonIndex.dngFamilyLevelCounts || {}).reduce((a, b) => a + b, 0)} level files, ${Object.values(DataStore.dungeonIndex.dngFamilySharedCounts || {}).reduce((a, b) => a + b, 0)} left family-shared rather than misattributed`
+            : "NOT scanned this build (DNG/ absent)"}.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Gates</b> flatten the same registry the Areas tab links into:
+          ${(DataStore.gateIndex && DataStore.gateIndex.count) || 0} gates
+          (${(DataStore.gateIndex && DataStore.gateIndex.byType && DataStore.gateIndex.byType.SA) || 0} <code>SA_*</code> Safe Area /
+          ${(DataStore.gateIndex && DataStore.gateIndex.byType && DataStore.gateIndex.byType.WT) || 0} <code>WT_*</code> Warp Terminal — two
+          confirmed separate art families), ${(DataStore.gateIndex && DataStore.gateIndex.withCoordinates) || 0} with real world
+          coordinates (zeros in the source are shown as unset, never a fake origin),
+          ${(DataStore.gateIndex && DataStore.gateIndex.withMapPieces) || 0} with map-reveal piece data from
+          <code>DA_MapPiece_PL_WL01/02_WP.json</code>, ${(DataStore.gateIndex && DataStore.gateIndex.dungeonAttributed) || 0} dungeon-attributed
+          (<code>SA_ERU_WAY_BOEROE_01</code> is the one dungeon-floor gate matching no pattern,
+          left unattributed). Town linkage is a name-template join — towns' own
+          <code>terminalID</code> (<code>TG_*</code>) is a SEPARATE ID namespace from this
+          registry, checked and corrected during this build rather than assumed. One name gap:
+          <code>TerminalName_WT_Mountaintop</code> exists in no language's table.
+          <b>"Golden Gates" remain the recorded OPEN question</b> (see Area Coverage above) —
+          deliberately not encoded as a data field on any gate.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.dungeonIndex && DataStore.dungeonIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">named dungeons</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(DataStore.dungeonIndex && DataStore.dungeonIndex.withGates) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with gate chains</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.gateIndex && DataStore.gateIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">total gates</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${DataStore.getAllGatesFlat ? DataStore.getAllGatesFlat().filter(g=>DataStore.isGateNameVerified(g)).length : 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">gates named (current language)</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-stamina);">${(DataStore.gateIndex && DataStore.gateIndex.withMapPieces) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with map pieces</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>World Map Coverage (World &gt; Map)</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          The interactive map's coordinate system was decoded and verified this session, not
+          assumed. <code>DA_MapPiece_PL_{'{WL}'}_WP.json</code> gives each gate a list of map
+          pieces with a world-space <b>center</b> position (verified by containment: every
+          terminal coordinate lands inside a center-anchored rect built from its own piece — a
+          corner-anchor hypothesis scattered misses) and a fixed scale of <b>80 world units per
+          pixel</b> on 512×512 piece textures. <code>DA_InGame</code>'s terminal registry supplies
+          the plottable points: <b>${(DataStore.worldMapIndex && DataStore.worldMapIndex.terminalCoordinates) || 0}
+          of 192</b> terminals carry real coordinates. That registry also settles the gate-prefix
+          question from World &gt; Gates: <b>SA = Safe Area, WT = Warp Terminal</b> — the game's
+          own legend, not an inference.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          ${(DataStore.worldMapIndex && DataStore.worldMapIndex.areaCount) || 0} areas are in the
+          piece registry; only <b>${(DataStore.worldMapIndex && DataStore.worldMapIndex.areasWithTextures) || 0}</b>
+          have their map textures exported so far (Forest2/Plains1/Plains3/Town families in
+          WL01) — more appear automatically as exports land, the same pattern as the Asset
+          Inspector's sidecars. The floor overview's clickable regions come from the game's own
+          <code>WBP_Map_FloorMap_WL01</code> widget layout (canvas offsets, no world math
+          needed there). <b>Chests attach by the confirmed location-fragment join</b> from
+          Items &gt; Chests and are listed per area rather than pinned — no chest coordinate
+          exists anywhere in the export. <b>Bosses, monster spawns, gathering materials, and
+          mission objectives have NO coordinates in the export</b> (checked directly —
+          <code>DT_SocketPopTable</code> and <code>DT_NatureItemGroupDataTable</code> carry
+          spawn/gather logic but no positions; quest files carry map DISPLAY params, not
+          objective coordinates) — their legend entries render disabled with that reason
+          rather than silently vanishing.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Composite seams, investigated after user reports:</b> some areas' composite maps
+          show a visible gap or hard seam between two of their OWN pieces. The placement math
+          was independently re-verified, not assumed: terminal-containment testing confirms the
+          center-anchor position at the true 512px×80-unit extent (70/71 match; smaller
+          candidate extents all fit far worse), and a direct pixel-level composite of a
+          well-overlapping area renders clean, connected terrain.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Root cause found and fixed:</b> <code>MapPieceDataDetails</code>' array order does
+          NOT match alphabetical piece-letter order (confirmed directly — one area's array is
+          <code>[c, a, b]</code>, not <code>[a, b, c]</code>; ALL 7 currently-textured areas
+          turned out to have non-alphabetical order). The pipeline used to construct each
+          piece's filename from its ARRAY INDEX, silently pairing every position with the WRONG
+          texture whenever an area's array wasn't already alphabetical — the actual cause of
+          "chunks positioned wrong relative to each other" reported with real in-game
+          screenshots. Fixed to read each entry's own <code>PieceTexture</code> field directly
+          instead of reconstructing a filename from position.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          A later asset export also added real <b>mask textures</b>
+          (<code>T_MapPiece_Mask_*</code>, referenced by each piece's own
+          <code>PieceMaskMaterial</code>) and real <b>map icons</b>
+          (<code>Widget/3DMapCapture/MapIcon/IconImages</code> — correctly colored, unlike
+          Cockpit/Minimap's white mask-tint textures). Each mask's alpha channel is flat 255;
+          the actual per-pixel crop data lives in its R/G color channels tracing a boundary
+          curve, and no shader graph is exported for the game's own mask material, so the exact
+          R/G combination formula can't be recovered with certainty — applied here as a
+          standard CSS luminance mask, a defensible real-data approximation, stated as such
+          rather than presented as pixel-exact. Areas below a 35% minimum piece-to-piece overlap
+          (independent of the ordering bug — a genuine property of how sparsely those specific
+          pieces were authored) show a "seam possible"/"gaps likely" badge and skip masking
+          rather than erode real content with little neighbor coverage to blend against.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Icons:</b> the game's own map icon sprites are unrecolored red/green MASK layers
+          (verified by direct pixel sampling), not final art — <code>build_map_icons</code>
+          recolors them with real image processing (green → a soft offset drop shadow for
+          depth, red → a flat fill) into explicit user-confirmed colors (Safe Areas/Warp
+          Terminals white; Treasure Chests, Waypoints, Side Quest Trinkets yellow; Arks purple;
+          Seals red; Magical Seals pink; town Smithy green, Chest teal, Item Seller orange) —
+          white, stated as unconfirmed rather than guessed, for the four layers with no
+          assigned color yet (Bosses, Monster Spawns, Materials, Mission Objectives).
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>World View</b> plots every textured area's pieces on ONE shared canvas at their
+          real, absolute world coordinates — no new data needed, just wider bounds than any
+          single area's own, answering "one continuous map" without per-area navigation.
+          <b>Towns and Dungeons</b> use a completely different, simpler asset (single
+          pre-composited images, not pieced tiles) and browse as reference images only — no
+          coordinate data anywhere in this export is confirmed to be scaled to a town or
+          dungeon-floor image's own local space, so no marker overlay is attempted for them.
+          Dungeon floor image suffixes (e.g. "HTE1") are NOT confirmed to map onto one specific
+          named dungeon in World › Dungeons (several share the same 3-letter prefix) and are
+          labeled by their raw exported name rather than guessed.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.worldMapIndex && DataStore.worldMapIndex.areaCount) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">areas in piece registry</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(DataStore.worldMapIndex && DataStore.worldMapIndex.areasWithTextures) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with exported map textures</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${(DataStore.worldMapIndex && DataStore.worldMapIndex.seamRiskCounts && DataStore.worldMapIndex.seamRiskCounts.low) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">low seam risk</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--rank-a);">${((DataStore.worldMapIndex && DataStore.worldMapIndex.seamRiskCounts && (DataStore.worldMapIndex.seamRiskCounts.medium + DataStore.worldMapIndex.seamRiskCounts.high)) || 0)}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">medium/high seam risk</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${(DataStore.worldMapIndex && DataStore.worldMapIndex.terminalCoordinates) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">terminals with coordinates</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-stamina);">${(DataStore.worldMapIndex && DataStore.worldMapIndex.markerPlacements) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">marker placements</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
         <h3>Character Coverage</h3>
         <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
           Characters (22 total, from <code>DT_CharacterDatabase.json</code>) use a 4th, distinct
@@ -254,6 +674,61 @@ const CoverageReportView = {
           but it resolves to nothing in any of the 13 language files, confirmed directly — even
           voices fall back to a raw ID + internal switch name.
         </p>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>NPC / Active Skill / Ailment Coverage</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          <b>NPCs</b> (${(DataStore.npcIndex && DataStore.npcIndex.count) || 0}) are the union of three
+          partially overlapping sources under <code>DataAssets/Character/NPC/</code>, with the
+          mismatches shown rather than hidden: ${(DataStore.npcIndex && DataStore.npcIndex.withDataFile) || 0}
+          NPCData definitions (${(DataStore.npcIndex && DataStore.npcIndex.debugSet) || 0} in the 009_FacialCheck
+          debug set), ${(DataStore.npcIndex && DataStore.npcIndex.rosterOnly) || 0} roster-only IDs with no data
+          file anywhere, ${(DataStore.npcIndex && DataStore.npcIndex.orphanPartsFiles) || 0} orphan appearance-parts
+          files referenced by no NPC, and ${(DataStore.npcIndex && DataStore.npcIndex.partsMissing) || 0} NPCs
+          referencing parts files that don't exist. <b>NPC names do not resolve:</b> all 114
+          NameKeys (<code>NPC1002</code> style) exist in NO language's tables — confirmed by
+          search, so there is no NPC localization builder at all. Appearance parts carry
+          skeletal-mesh paths into <code>CHR/</code> (a forward reference to the planned
+          Skeleton Assets tab), and placed actions reference animation montages by name.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Active Skills</b> (${(DataStore.activeSkillIndex && DataStore.activeSkillIndex.count) || 0}, from
+          <code>DT_ActiveSkillList.json</code>) carry ID, soul cost, cooldown, and icons — and
+          nothing else: no effect text, unlock, or upgrade data exists outside Blueprints. Their
+          names are <b>internal developer strings</b> — no <code>ActiveSkillName_*</code> key
+          family exists in any language (searched), so no localization is shown or faked. An
+          earlier session deliberately left this table unbuilt while ActiveSkill1's in-game
+          trigger was unconfirmed; it's now surfaced as reference data with that caveat intact.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Ailments</b> (${(DataStore.ailmentIndex && DataStore.ailmentIndex.count) || 0}) are the game's own
+          tutorial localization pairs — official names AND effect descriptions in all 13
+          languages. <b>No status-effect data table or enum exists anywhere in DataAssets</b>
+          (the only <code>*State*</code> enum in the export is <code>EVoiceState</code>) —
+          mechanics live in unexported Blueprints, the same honest situation as monster HP.
+          Nine bad-state icons for nine named ailments is a suggestive count match, but no data
+          pairs icon numbers to ailment codes — the icons are shown as an inventory,
+          deliberately unpaired. Good-state (buff) icons have no name registry at all.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.npcIndex && DataStore.npcIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">NPCs (0 names resolve)</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(DataStore.npcIndex && DataStore.npcIndex.withParts) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">with appearance parts</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${(DataStore.activeSkillIndex && DataStore.activeSkillIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">active skills (internal names)</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-stamina);">${(DataStore.ailmentIndex && DataStore.ailmentIndex.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">ailments, 13/13 languages</div>
+          </div>
+        </div>
       </div>
 
       <div class="hud-panel" style="margin-bottom:16px;">
@@ -387,6 +862,61 @@ const CoverageReportView = {
         </div>
         <div style="display:flex; flex-wrap:wrap; gap:6px;">
           ${report.unresolved.map((m) => `<span class="pill unverified">${m}</span>`).join("")}
+        </div>
+      </div>
+
+      <div class="hud-panel" style="margin-bottom:16px;">
+        <h3>Asset Inspector Coverage (Skeletons &amp; Animations)</h3>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
+          The CHR/, ITM/, and ANM/ trees (from the 9-zip asset export drop) are cataloged as two
+          Asset Inspector tabs. <b>Skeletons</b>:
+          ${(DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.skeletons && DataStore.assetInspectorIndex.skeletons.count) || 0}
+          mesh assets — SK_ skeletal meshes plus SM_ static meshes (a real, separate kind found
+          when the pskx census didn't match the first catalog pass) — grouped with their
+          same-folder companions by the verified conventions: <code>_Skeleton</code> (bone
+          skeleton), <code>PHYS_</code> prefix OR <code>_PhysicsAsset</code> suffix (BOTH
+          conventions are real in this export), and <code>_MorphData</code>. <b>Animations</b>:
+          ${(DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.animations && DataStore.assetInspectorIndex.animations.count) || 0}
+          assets, kind classified by the verified filename prefixes (A_/AS_ AnimSequence,
+          AM_ AnimMontage, BS_ BlendSpace, AC_ AnimComposite).
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Downloads:</b> the JSONs are asset <b>metadata</b> — UE doesn't export geometry or
+          animation data to JSON. The binary sidecars ARE the data: psk / pskx / uemodel for
+          meshes and skeletons (blend supported, appears when uploaded), psa / ueanim for
+          animations, detected by the same-folder same-stem convention (417 of 420 current
+          sidecars match; the 3 orphans are listed in the index, not hidden; 11 pskx live on
+          _Skeleton companion stems and are detected there too). Downloads stream the raw
+          exported files directly — the asset trees are deliberately NOT mirrored into
+          Content/ROD (mirroring them once filled the disk mid-build; the DT Inspector now
+          excludes ANM/CHR/ITM/Blueprints for exactly that reason).
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Unlocked for a future section — Monster Stats:</b> the new
+          <code>Blueprints/</code> export carries 174 enemy Blueprints whose defaults hold
+          EnemyLevel, AttackPower, DefencePower, WeaponExperiencePoint, and per-difficulty
+          DifficultyLevelRewardLotKeys (a CONFIRMED drops link), with a per-enemy
+          <code>CT_E</code> curve table holding MaxHealth / AttackPower / DefencePower /
+          ExperiencePoint / Col as level curves (level 1–301). Monster Health/Levels —
+          previously recorded as not in the export — is now buildable and next on the roadmap.
+        </p>
+        <div style="display:flex; gap:24px; margin-top:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-hp);">${(DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.skeletons && DataStore.assetInspectorIndex.skeletons.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">mesh assets (SK_ + SM_)</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-sp);">${(DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.animations && DataStore.assetInspectorIndex.animations.count) || 0}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">animation assets</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--db-cyan-bright);">${(() => { const sc = (DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.skeletons && DataStore.assetInspectorIndex.skeletons.sidecarCounts) || {}; return (sc.psk || 0) + (sc.pskx || 0) + (sc.uemodel || 0) + (sc.blend || 0); })()}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">mesh sidecar downloads</div>
+          </div>
+          <div>
+            <div style="font-size:28px; font-family:var(--font-mono); color:var(--hud-stamina);">${(() => { const sc = (DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.animations && DataStore.assetInspectorIndex.animations.sidecarCounts) || {}; return (sc.psa || 0) + (sc.ueanim || 0); })()}</div>
+            <div style="font-size:12px; color:var(--hud-text-dim);">animation sidecar downloads</div>
+          </div>
         </div>
       </div>
 
@@ -529,6 +1059,12 @@ const CoverageReportView = {
     if (openBudgetTrackerBtn) {
       openBudgetTrackerBtn.addEventListener("click", () => {
         BudgetTrackerModal.show();
+      });
+    }
+    const openAiSkillBtn = wrap.querySelector("#openAiSkillBtn");
+    if (openAiSkillBtn) {
+      openAiSkillBtn.addEventListener("click", () => {
+        AISkillModal.show();
       });
     }
 
@@ -826,6 +1362,7 @@ const CoverageReportView = {
         <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--hud-border); display:flex; gap:8px;">
           <button class="toggle-btn" id="reopenDisclaimerBtn">View Disclaimer</button>
           <button class="toggle-btn" id="openBudgetTrackerBtn">Budget Tracker</button>
+          <button class="toggle-btn" id="openAiSkillBtn">AI Skill</button>
         </div>
       </div>
     `;

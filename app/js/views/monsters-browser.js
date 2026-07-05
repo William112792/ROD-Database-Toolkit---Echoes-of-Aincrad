@@ -35,7 +35,7 @@ const MonstersBrowserView = {
       <div class="coverage-banner" id="monsterQuickCoverage"></div>
       <div class="toolbar" id="monsterTypeTabs" style="margin-bottom:10px;"></div>
       <div class="toolbar" id="monsterToolbar"></div>
-      <div class="equip-layout" style="grid-template-columns: 360px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 360px;">
         <div id="monsterListPane"></div>
         <div id="monsterDetailPane"></div>
       </div>

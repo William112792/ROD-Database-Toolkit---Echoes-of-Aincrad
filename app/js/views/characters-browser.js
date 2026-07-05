@@ -59,6 +59,9 @@ const CharactersBrowserView = {
       ["partners", "Partners"],
       ["customization", "Customization"],
       ["player", "Player"],
+      ["npcs", "NPCs"],
+      ["activeskills", "Active Skills"],
+      ["ailments", "Ailments"],
     ];
     el.innerHTML = tabs.map(([key, label]) =>
       `<button class="toggle-btn${this.state.activeTab === key ? " active" : ""}" data-tab="${key}">${label}</button>`
@@ -81,6 +84,16 @@ const CharactersBrowserView = {
       this.renderPartnersTab(container);
     } else if (this.state.activeTab === "player") {
       this.renderPlayerTab(container);
+    } else if (this.state.activeTab === "npcs") {
+      // The three newest tabs delegate to fully separate view files
+      // (npcs-browser.js / active-skills-browser.js /
+      // ailments-browser.js) rather than growing this file further --
+      // the same keep-each-tab-separate reasoning DESIGN 8.6 records.
+      NPCsBrowserView.render(container);
+    } else if (this.state.activeTab === "activeskills") {
+      ActiveSkillsBrowserView.render(container);
+    } else if (this.state.activeTab === "ailments") {
+      AilmentsBrowserView.render(container);
     } else {
       this.renderCustomizationTab(container);
     }
@@ -101,7 +114,7 @@ const CharactersBrowserView = {
     wrap.innerHTML = `
       <div class="coverage-banner" id="charQuickCoverage"></div>
       <div class="toolbar" id="charToolbar"></div>
-      <div class="equip-layout" style="grid-template-columns: 360px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 360px;">
         <div id="charListPane"></div>
         <div id="charDetailPane"></div>
       </div>
@@ -241,7 +254,7 @@ const CharactersBrowserView = {
     const wrap = document.createElement("div");
     wrap.innerHTML = `
       <div class="coverage-banner" id="partnerQuickCoverage"></div>
-      <div class="equip-layout" style="grid-template-columns: 280px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 280px;">
         <div id="partnerListPane"></div>
         <div id="partnerDetailPane"></div>
       </div>
@@ -683,7 +696,7 @@ const CharactersBrowserView = {
     const wrap = document.createElement("div");
     wrap.innerHTML = `
       <div class="coverage-banner" id="playerQuickCoverage"></div>
-      <div class="equip-layout" style="grid-template-columns: 1fr 380px;">
+      <div class="equip-layout side-right" style="--side-col: 380px;">
         <div id="playerStatsPane"></div>
         <div id="playerGearPane"></div>
       </div>

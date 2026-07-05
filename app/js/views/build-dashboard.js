@@ -29,7 +29,10 @@ const BuildDashboardView = {
     overview: null,
     loading: true,
     loadError: null,
-    rebuildingKey: null, // which section key (or "__full__") is currently mid-rebuild, for a simple busy indicator
+    rebuildingKey: null, // which section key ("__full__", or "__group_<name>__") is currently mid-rebuild, for a simple busy indicator
+    groups: {}, // focus-build bundles from --status (FOCUS_GROUPS, dependency-expanded server-side)
+    statusGeneratedAt: null, // when the cached checks were really computed
+    statusCached: true,
     uploadResult: null,
     unknownFiles: [], // files from the last upload that didn't match any section's known rawInputs
   },
@@ -61,6 +64,9 @@ const BuildDashboardView = {
         <a class="toggle-btn" id="buildDownloadZipBtn" href="/api/pipeline/download-zip" style="margin-left:auto; text-decoration:none;" download>⬇ Download Content.zip</a>
       </div>
 
+      <div id="buildFocusGroups"></div>
+      <pre id="buildLiveLog" style="display:none; max-height:220px; overflow-y:auto; background:rgba(0,0,0,0.35); border:1px solid var(--hud-border); border-radius:6px; padding:10px 12px; font-size:11px; line-height:1.5; white-space:pre-wrap; margin:10px 0;" title="Live pipeline output — streamed from the running background job (python3 -u), polled every ~1.2s"></pre>
+
       <div id="buildStatusGrid"></div>
       <div id="buildUnknownFiles"></div>
     `;
@@ -85,12 +91,62 @@ const BuildDashboardView = {
       const data = await res.json();
       this.state.sections = data.sections;
       this.state.overview = data.overview;
+      this.state.groups = data.groups || {};
+      this.state.statusGeneratedAt = data.generatedAt || null;
+      this.state.statusCached = !!data.cached;
+      this.state.statusNeverComputed = !!data.neverComputed;
     } catch (e) {
       this.state.loadError = e.message;
     }
     this.state.loading = false;
     this.renderOverviewPanel();
     this.renderStatusGrid();
+    this.renderFocusGroups();
+  },
+
+  /**
+   * Focus builds: named bundles of related sections, rendered from
+   * the SAME FOCUS_GROUPS registry the pipeline CLI runs (delivered
+   * inside --status as `groups`, dependency-expanded server-side) --
+   * the introspect-don't-duplicate principle this whole dashboard was
+   * built on. Each button starts a background job that rebuilds ONLY
+   * that bundle (plus any auto-included prerequisites, which the
+   * status payload lists), leaving every other section's outputs on
+   * disk untouched -- previous calculations are retained by
+   * construction, since no section ever deletes a sibling's files.
+   */
+  renderFocusGroups() {
+    const el = document.getElementById("buildFocusGroups");
+    if (!el) return;
+    const groups = this.state.groups || {};
+    const names = Object.keys(groups);
+    if (!names.length) {
+      el.innerHTML = "";
+      return;
+    }
+    el.innerHTML = `
+      <div class="hud-panel" style="margin:10px 0; padding:10px 14px;">
+        <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--hud-text); margin-bottom:2px;">Focus Builds</div>
+        <div style="font-size:11px; color:var(--hud-text-dim); margin-bottom:8px;">
+          Rebuild just one area of the app — runs only that bundle (auto-including any
+          prerequisite sections, shown per button) and leaves everything else exactly as the
+          last build left it. The full pipeline run above still exists unchanged.
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:6px;">
+          ${names.map((name) => {
+            const g = groups[name];
+            const busy = this.state.rebuildingKey === `__group_${name}__`;
+            const auto = (g.autoIncluded || []).length
+              ? ` — auto-includes: ${g.autoIncluded.join(", ")}`
+              : "";
+            return `<button class="toggle-btn" data-group-key="${escapeHtml(name)}" ${this.state.rebuildingKey ? "disabled" : ""} style="font-size:11px; padding:5px 12px;" title="${escapeHtml(g.label)}: ${escapeHtml(g.sections.join(", "))}${escapeHtml(auto)}">${busy ? "Building…" : escapeHtml(g.label)}</button>`;
+          }).join("")}
+        </div>
+      </div>
+    `;
+    el.querySelectorAll("[data-group-key]").forEach((btn) => {
+      btn.addEventListener("click", () => this.triggerRebuild(null, btn.dataset.groupKey));
+    });
   },
 
   /**
@@ -103,8 +159,10 @@ const BuildDashboardView = {
    * running" honestly (if these calls throw or return empty, it
    * isn't) and guarantees the numbers shown here can never silently
    * drift from what the rest of the app shows for the same categories.
-   * "Areas" maps to Towns (10) -- the closest literal section to that
-   * word in this toolkit; "enemies" maps to Monsters.
+   * "Areas" used to map to Towns (10) as the closest literal section
+   * to that word before a real Areas section existed -- it now reads
+   * the real World > Areas data and Towns gets its own count;
+   * "enemies" maps to Monsters.
    */
   computePhase4() {
     try {
@@ -113,7 +171,8 @@ const BuildDashboardView = {
         recipes: DataStore.getAllRecipesFlat().length,
         weapons: DataStore.getAllWeaponsFlat().length,
         armor: DataStore.getAllArmorFlat().length,
-        areas: DataStore.getAllTownsFlat().length,
+        areas: DataStore.getAllAreasFlat().length,
+        towns: DataStore.getAllTownsFlat().length,
         partners: DataStore.getPartnersFlat().length,
         enemies: DataStore.getAllMonstersFlat().length,
       };
@@ -139,6 +198,20 @@ const BuildDashboardView = {
           <div class="empty-state" style="padding:20px 10px;"><p>Loading overview…</p></div>
         </div>
       `;
+      return;
+    }
+    if (this.state.statusNeverComputed && !this.state.overview) {
+      el.innerHTML = `
+        <div class="hud-panel" style="margin-bottom:14px; padding:12px 14px;">
+          <div style="font-size:12px; color:var(--hud-text-dim);">
+            No section checks have been computed on this instance yet — the dashboard no longer
+            runs them on page load (they really run every section, which takes minutes).
+            <button class="toggle-btn" id="buildRefreshChecksBtn" style="font-size:11px; padding:3px 10px; margin-left:8px;">Run checks now</button>
+          </div>
+        </div>
+      `;
+      const btn = document.getElementById("buildRefreshChecksBtn");
+      if (btn) btn.addEventListener("click", () => this.refreshChecks());
       return;
     }
     if (this.state.loadError || !this.state.overview) {
@@ -175,6 +248,14 @@ const BuildDashboardView = {
     };
 
     el.innerHTML = `
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px; font-size:11px; color:var(--hud-text-dim);">
+        <span title="The Export/Schema/Outputs checks below really run every section, which now takes minutes — so the dashboard loads the LAST computed report instantly and only re-runs the checks on request (as a background job).">
+          ${this.state.statusCached
+            ? `Checks from ${this.state.statusGeneratedAt ? new Date(this.state.statusGeneratedAt).toLocaleString() : "a previous run"} (cached)`
+            : `Checks freshly computed${this.state.statusGeneratedAt ? " " + new Date(this.state.statusGeneratedAt).toLocaleString() : ""}`}
+        </span>
+        <button class="toggle-btn" id="buildRefreshChecksBtn" ${this.state.rebuildingKey ? "disabled" : ""} style="font-size:11px; padding:3px 10px;">Re-run checks</button>
+      </div>
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-bottom:14px;">
 
         <div class="hud-panel" style="margin-bottom:0;">
@@ -235,6 +316,7 @@ const BuildDashboardView = {
               ${stat(p4.counts.items, "Items")}
               ${stat(p4.counts.recipes, "Recipes")}
               ${stat(p4.counts.areas, "Areas")}
+              ${stat(p4.counts.towns, "Towns")}
               ${stat(p4.counts.partners, "Partners")}
               ${stat(p4.counts.enemies, "Enemies")}
             </div>
@@ -254,6 +336,61 @@ const BuildDashboardView = {
         toggleLink.innerHTML = toggleLink.innerHTML.replace(showing ? "▴" : "▾", showing ? "▾" : "▴");
       });
     }
+
+    const refreshBtn = document.getElementById("buildRefreshChecksBtn");
+    if (refreshBtn) refreshBtn.addEventListener("click", () => this.refreshChecks());
+  },
+
+  /**
+   * Re-runs the REAL status checks (--status: every section actually
+   * executes) as a background job through the same single-job
+   * machinery rebuilds use, then reloads the freshly cached report.
+   * This is the explicit, on-demand replacement for what page load
+   * used to do synchronously -- and used to 500/504 on once the
+   * pipeline grew past the HTTP timeout.
+   */
+  async refreshChecks() {
+    const btn = document.getElementById("buildRefreshChecksBtn");
+    const startedAt = Date.now();
+    const logEl = document.getElementById("buildLiveLog");
+    const tick = () => {
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = `Re-running checks… (${Math.round((Date.now() - startedAt) / 1000)}s)`;
+      }
+    };
+    tick();
+    const tickInterval = setInterval(tick, 1000);
+    try {
+      const res = await fetch("/api/pipeline/refresh-status", { method: "POST" });
+      const started = await res.json();
+      if (res.status === 409) {
+        alert(`A build is already running (${started.mode || "unknown mode"}). Wait for it to finish.`);
+        clearInterval(tickInterval);
+        if (btn) { btn.disabled = false; btn.textContent = "Re-run checks"; }
+        return;
+      }
+      if (logEl) { logEl.style.display = "block"; logEl.textContent = "Re-running all section checks…"; }
+      let done = false;
+      while (!done) {
+        await new Promise((r) => setTimeout(r, 1500));
+        let prog;
+        try {
+          prog = await (await fetch("/api/pipeline/rebuild-progress")).json();
+        } catch (e) { continue; }
+        if (!prog.running && prog.jobId === started.jobId) {
+          done = true;
+          if (logEl) logEl.style.display = "none"; // the status job's "log" is one giant JSON blob -- not useful to display
+          if (prog.exitCode !== 0) {
+            alert(`Status check failed (exit code ${prog.exitCode}):\n\n${(prog.log || "").slice(-1200)}`);
+          }
+        }
+      }
+    } catch (e) {
+      alert(`Status refresh failed: ${e.message}`);
+    }
+    clearInterval(tickInterval);
+    await this.loadStatus();
   },
 
   renderStatusGrid() {
@@ -331,62 +468,97 @@ const BuildDashboardView = {
     });
   },
 
-  async triggerRebuild(onlyKey) {
-    this.state.rebuildingKey = onlyKey || "__full__";
+  async triggerRebuild(onlyKey, groupKey) {
+    this.state.rebuildingKey = groupKey ? `__group_${groupKey}__` : (onlyKey || "__full__");
     this.renderStatusGrid();
+    this.renderFocusGroups();
 
-    // renderStatusGrid() only reflects rebuildingKey on PER-SECTION
-    // buttons (each checks rebuildingKey === s.key) -- the standalone
-    // "Rebuild Full Pipeline" button was never touched by any render
-    // call at all, so clicking it previously gave zero visual
-    // feedback anywhere on the page, even though the request was
-    // genuinely running. Fixed here directly, plus a live elapsed-
-    // time counter on both buttons -- a full rebuild can legitimately
-    // take several seconds to over a minute depending on how much
-    // changed, and a static "Rebuilding…" label with no indication
-    // of elapsed time looks identical whether it's working normally
-    // or actually stuck.
+    // Rebuilds are now BACKGROUND JOBS: the server returns immediately
+    // and this poller tails /api/pipeline/rebuild-progress until the
+    // job exits. The original synchronous request-per-rebuild produced
+    // a real 504 once full runs grew past the HTTP timeout (44
+    // sections + the Maps/DNG level scans) -- polling has no such
+    // ceiling, and gets a genuinely live log as a bonus (the server
+    // runs python3 -u so section prints stream as they happen).
     const fullBtn = document.getElementById("buildRebuildAllBtn");
     const sectionBtn = onlyKey ? document.querySelector(`[data-rebuild-key="${onlyKey}"]`) : null;
+    const groupBtn = groupKey ? document.querySelector(`[data-group-key="${groupKey}"]`) : null;
     const startedAt = Date.now();
     const originalFullLabel = fullBtn ? fullBtn.textContent : "";
+    const logEl = document.getElementById("buildLiveLog");
+    if (logEl) {
+      logEl.style.display = "block";
+      logEl.textContent = "Starting…";
+    }
 
     const tick = () => {
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       if (fullBtn) {
-        if (!onlyKey) {
-          fullBtn.disabled = true;
-          fullBtn.textContent = `Rebuilding Full Pipeline… (${elapsed}s)`;
-        } else {
-          fullBtn.disabled = true; // avoid a second rebuild racing this one, whichever section it targets
-        }
+        fullBtn.disabled = true; // one job at a time -- the server enforces this too (409)
+        if (!onlyKey && !groupKey) fullBtn.textContent = `Rebuilding Full Pipeline… (${elapsed}s)`;
       }
       if (sectionBtn) sectionBtn.textContent = `Rebuilding… (${elapsed}s)`;
+      if (groupBtn) groupBtn.textContent = `Building… (${elapsed}s)`;
     };
     tick();
     const tickInterval = setInterval(tick, 1000);
 
+    const finish = () => {
+      clearInterval(tickInterval);
+      if (fullBtn) {
+        fullBtn.disabled = false;
+        fullBtn.textContent = originalFullLabel || "Rebuild Full Pipeline";
+      }
+      this.state.rebuildingKey = null;
+    };
+
     try {
+      const body = groupKey ? { groupKey } : (onlyKey ? { onlyKey } : {});
       const res = await fetch("/api/pipeline/rebuild", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(onlyKey ? { onlyKey } : {}),
+        body: JSON.stringify(body),
       });
-      const data = await res.json();
-      if (!data.ok) {
-        alert(`Rebuild failed (exit code ${data.exitCode}):\n\n${data.stderr || data.stdout}`);
+      const started = await res.json();
+      if (res.status === 409) {
+        alert(`A build is already running (${started.mode || "unknown mode"}, started ${started.startedAt}). Wait for it to finish.`);
+        finish();
+        return;
+      }
+      if (!started.started) {
+        alert(`Rebuild failed to start: ${started.error || "unknown error"}`);
+        finish();
+        return;
+      }
+
+      // Poll until done, tailing the live log into the panel.
+      let done = false;
+      while (!done) {
+        await new Promise((r) => setTimeout(r, 1200));
+        let prog;
+        try {
+          prog = await (await fetch("/api/pipeline/rebuild-progress")).json();
+        } catch (e) {
+          continue; // transient poll failure: keep trying, the job is server-side
+        }
+        if (logEl && prog.log != null) {
+          const tail = prog.log.length > 6000 ? "…" + prog.log.slice(-6000) : prog.log;
+          logEl.textContent = tail;
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+        if (!prog.running && prog.jobId === started.jobId) {
+          done = true;
+          if (prog.exitCode !== 0) {
+            const tail = (prog.log || "").slice(-1500);
+            alert(`Rebuild failed (exit code ${prog.exitCode}):\n\n${tail}`);
+          }
+        }
       }
     } catch (e) {
       alert(`Rebuild request failed: ${e.message}`);
     }
 
-    clearInterval(tickInterval);
-    if (fullBtn) {
-      fullBtn.disabled = false;
-      fullBtn.textContent = originalFullLabel || "Rebuild Full Pipeline";
-    }
-
-    this.state.rebuildingKey = null;
+    finish();
     await this.loadStatus();
   },
 
@@ -503,7 +675,27 @@ const BuildDashboardView = {
           return;
         }
 
-        this.flagUnknownFiles(data.files || []);
+        // The server already truncates `files` to the first 200
+        // entries (a full upload can have thousands) -- these are
+        // ABSOLUTE paths, so strip everything up through "Content/ROD/"
+        // to get the relative path every section's rawInputs is
+        // actually expressed in, then check each one for real instead
+        // of flagging the entire list unconditionally. That
+        // unconditional flagging was a real, separate bug from the
+        // stale-pre-merge-path one above: even a perfectly recognized
+        // file (or a Localization file whose path had JUST been
+        // corrected to the right location) was still shown as
+        // "unrecognized," because nothing was actually checking
+        // whether it matched a known section at all.
+        const relativePaths = (data.files || [])
+          .map((f) => {
+            const normalized = f.replace(/\\/g, "/");
+            const idx = normalized.indexOf("Content/ROD/");
+            return idx === -1 ? null : normalized.slice(idx + "Content/ROD/".length);
+          })
+          .filter(Boolean);
+        const unrecognized = relativePaths.filter((p) => !this.isRecognizedRawPath(p));
+        this.flagUnknownFiles(unrecognized);
         const movedNote = (data.movedFolders && data.movedFolders.length > 0)
           ? `<p style="font-size:11px; color:var(--hud-text-dim); margin-top:4px;">Repositioned ${data.movedFolders.join(", ")} under Content/ROD/ to match the pipeline's expected structure.</p>`
           : "";
@@ -601,6 +793,37 @@ const BuildDashboardView = {
    * only patterns with a real fixed prefix (e.g. "Town_*.json") are
    * trusted to disambiguate.
    */
+  /**
+   * Checks a path already relative to raw-export/Content/ROD/ (e.g.
+   * "Localization/Game/de/Game.json") directly against every known
+   * section's rawInputs -- literal paths or glob patterns, same
+   * over-broad-glob guard as guessRelativePath() below (a bare/near-
+   * bare wildcard like "*.json" is never trusted as a match on its
+   * own). This is the ZIP-upload counterpart to guessRelativePath():
+   * that one guesses a full path from a bare FILENAME (all a loose-
+   * file upload has to go on); this one already HAS the full path
+   * (every file extracted from a ZIP knows exactly where it landed)
+   * and just needs to check it directly, not guess at it.
+   */
+  isRecognizedRawPath(relativePath) {
+    if (!this.state.sections) return false;
+    for (const section of this.state.sections) {
+      for (const input of section.rawInputs) {
+        if (input.path === relativePath) return true;
+        if (input.path.includes("*")) {
+          const fixedPrefix = input.path.split("*")[0];
+          if (fixedPrefix.length < 3) continue;
+          const escaped = input.path
+            .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*/g, ".*");
+          const regex = new RegExp("^" + escaped + "$");
+          if (regex.test(relativePath)) return true;
+        }
+      }
+    }
+    return false;
+  },
+
   guessRelativePath(filename) {
     if (!this.state.sections) return null;
     for (const section of this.state.sections) {

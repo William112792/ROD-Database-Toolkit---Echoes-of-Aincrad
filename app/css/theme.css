@@ -108,9 +108,17 @@ html, body {
   transform: translateY(-50%);
 }
 .bg-rings svg { width: 100%; height: 100%; }
-.bg-ring-outer { animation: ringRotateCW 90s linear infinite; transform-origin: center; }
-.bg-ring-mid   { animation: ringRotateCCW 65s linear infinite; transform-origin: center; }
-.bg-ring-inner { animation: ringRotateCW 40s linear infinite; transform-origin: center; }
+/* Lens arc rings: direction alternates per ring (CW/CCW), speed rises
+   toward the center — the "camera lens / digital retina" motion from
+   the game's own Database screen. Every ring shares transform-origin
+   center so they all spin about the lens core. */
+.bg-ring-r1 { animation: ringRotateCW  110s linear infinite; transform-origin: center; }
+.bg-ring-r2 { animation: ringRotateCCW  84s linear infinite; transform-origin: center; }
+.bg-ring-r3 { animation: ringRotateCW   62s linear infinite; transform-origin: center; }
+.bg-ring-r4 { animation: ringRotateCCW  48s linear infinite; transform-origin: center; }
+.bg-ring-r5 { animation: ringRotateCW   36s linear infinite; transform-origin: center; }
+.bg-ring-r6 { animation: ringRotateCCW  27s linear infinite; transform-origin: center; }
+.bg-ring-r7 { animation: ringRotateCW   20s linear infinite; transform-origin: center; }
 
 @keyframes ringRotateCW  { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes ringRotateCCW { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
@@ -146,6 +154,14 @@ html, body {
 .bg-monitor-box {
   position: absolute;
   border: 1px solid rgba(135,200,210,0.35);
+  /* Filled, not outline-only: a translucent panel wash (slightly
+     brighter than the page background, matching the game's monitor
+     rectangles) with a faint vertical sheen — still fully see-through
+     over whatever's behind it. Change requested against the original
+     outline-only look, which read as unfinished. */
+  background:
+    linear-gradient(180deg, rgba(135,200,210,0.10), rgba(135,200,210,0.045) 55%, rgba(20,50,60,0.10));
+  box-shadow: inset 0 0 18px rgba(135,200,210,0.06);
   opacity: 0;
   width: var(--target-w, 100px);
   height: var(--target-h, 60px);
@@ -170,7 +186,7 @@ html, body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bg-ring-outer, .bg-ring-mid, .bg-ring-inner,
+  .bg-rings g,
   .bg-edge-line, .bg-monitor-box { animation: none !important; }
 }
 
@@ -878,14 +894,57 @@ html, body {
 
 .equip-layout {
   display: grid;
-  grid-template-columns: 360px 1fr 380px;
+  /* Column widths come from CSS custom properties so views can size
+     their list pane inline (style="--list-col: 360px;") WITHOUT
+     defeating the mobile stacking rule below. The original approach
+     (inline grid-template-columns on every view) silently overrode
+     the media query -- inline styles always beat stylesheet rules --
+     which is exactly why newer sections didn't stack their preview
+     under the list on phones while older ones did (found via three
+     real mobile screenshots). Inline custom properties only FEED the
+     base rule; the media query re-declares grid-template-columns
+     directly, so it always wins on small screens. */
+  grid-template-columns: var(--list-col, 360px) 1fr var(--side-col, 380px);
   gap: 16px;
   align-items: start;
 }
+/* Two-column list+detail (the common case set by most views) */
+.equip-layout.two-col { grid-template-columns: var(--list-col, 340px) 1fr; }
+/* Reversed: content left, side panel right (Characters > Player) */
+.equip-layout.side-right { grid-template-columns: 1fr var(--side-col, 380px); }
 
 @media (max-width: 1100px) {
-  .equip-layout { grid-template-columns: 1fr; }
+  .equip-layout,
+  .equip-layout.two-col,
+  .equip-layout.side-right { grid-template-columns: 1fr; }
+  /* Stacked list panes were capping at their desktop max-height and
+     leaving the detail pane a long scroll away -- keep them shorter
+     when stacked so the preview is reachable. Self-managed panes
+     (BP/Asset/Wwise -- their INNER .hud-panel is the scroll element,
+     with a JS-set max-height) must be capped on that inner element
+     instead: capping their outer box while the inner keeps its own
+     taller max-height let list content paint straight over the
+     preview below (user-reported "list going behind the preview" --
+     the first version of this rule caused exactly that). */
+  .equip-layout > [id$="ListPane"]:not(.list-pane-self-managed) {
+    max-height: 42vh !important;
+    overflow-y: auto;
+  }
+  .equip-layout > .list-pane-self-managed > .hud-panel {
+    max-height: 42vh !important;
+    overflow-y: auto;
+  }
 }
+
+/* Grid blowout guard: a grid item's default min-width is `auto`, so
+   one long unbreakable mono string (JSON keys, DT table names) forces
+   the 1fr detail column wider than the viewport and the whole section
+   walks off the right edge (user-reported on the JSON and DT
+   Inspectors). min-width:0 lets columns actually shrink to their
+   track size; overflow-wrap on the two inspectors' detail panes then
+   wraps the long tokens instead of clipping them. */
+.equip-layout > * { min-width: 0; }
+#inspectorDetail, #dtInspectorDetail { overflow-wrap: anywhere; }
 
 /* ============================================================
    List pane scroll containment (UI/UX fix, Option A)
@@ -1904,6 +1963,16 @@ body.scan-bar-disabled .scan-bar { display: none; }
   padding: 4px 8px;
 }
 .budget-tracker-close:hover { color: var(--hud-text); }
+
+/* AI Skill modal reuses .budget-tracker-box's panel/table/close-button
+   styling wholesale -- only widened slightly for the two-column
+   "game vs toolkit" table and the numbered load-in steps. */
+.ai-skill-box {
+  max-width: 680px;
+}
+.ai-skill-box code {
+  font-size: 11px;
+}
 .budget-tracker-section-label {
   font-family: var(--font-display);
   font-size: 12px;
@@ -1947,3 +2016,39 @@ body.scan-bar-disabled .scan-bar { display: none; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
+
+/* ============================================================
+   Modding Guides — rendered Markdown + editor
+   Matches the HUD theme: same panel surfaces, cyan accents, mono
+   code. The .guide-img-placeholder is what a missing screenshot
+   renders as (the seeded Getting Started guide uses per-step
+   placeholder image paths until real screenshots are pasted in). */
+.guide-rendered { font-size: 13px; line-height: 1.75; color: var(--hud-text); }
+.guide-rendered .guide-h { font-family: var(--font-display); color: var(--db-cyan-bright); margin: 18px 0 6px; }
+.guide-rendered h2.guide-h { font-size: 18px; border-bottom: 1px solid var(--hud-border); padding-bottom: 4px; }
+.guide-rendered h3.guide-h { font-size: 15px; }
+.guide-rendered h4.guide-h, .guide-rendered h5.guide-h { font-size: 13px; color: var(--hud-text); }
+.guide-rendered .guide-p { margin: 6px 0; }
+.guide-rendered .guide-list { margin: 6px 0 6px 22px; }
+.guide-rendered .guide-list li { margin: 3px 0; }
+.guide-rendered code { font-family: var(--font-mono); font-size: 12px; background: rgba(64,207,216,0.08); border: 1px solid rgba(64,207,216,0.15); border-radius: 3px; padding: 1px 5px; }
+.guide-rendered .guide-code { font-family: var(--font-mono); font-size: 12px; background: rgba(0,0,0,0.35); border: 1px solid var(--hud-border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; white-space: pre; }
+.guide-rendered .guide-quote { border-left: 3px solid rgba(64,207,216,0.4); margin: 8px 0; padding: 4px 12px; color: var(--hud-text-dim); background: rgba(64,207,216,0.04); }
+.guide-rendered .guide-hr { border: none; border-top: 1px solid var(--hud-border); margin: 14px 0; }
+.guide-rendered a { color: var(--db-cyan-bright); }
+.guide-rendered .guide-img { max-width: 100%; border: 1px solid var(--hud-border); border-radius: 6px; margin: 8px 0; display: block; }
+.guide-img-placeholder {
+  display: block; margin: 8px 0; padding: 26px 16px; text-align: center;
+  font-size: 12px; color: var(--hud-text-dim);
+  border: 1px dashed rgba(135,200,210,0.4); border-radius: 6px;
+  background: rgba(135,200,210,0.05);
+}
+.guide-editor {
+  width: 100%; min-height: 460px; resize: vertical;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7;
+  color: var(--hud-text); background: rgba(0,0,0,0.3);
+  border: 1px solid var(--hud-border); border-radius: 6px; padding: 12px 14px;
+  outline: none;
+}
+.guide-editor:focus { border-color: rgba(64,207,216,0.5); box-shadow: 0 0 0 1px rgba(64,207,216,0.25); }
+.guide-editor.drop-target { border-color: var(--db-cyan-bright); box-shadow: 0 0 12px rgba(64,207,216,0.3) inset; }

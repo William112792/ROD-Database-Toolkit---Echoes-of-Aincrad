@@ -20,7 +20,7 @@ const JsonInspectorView = {
         <input type="text" class="search-input" id="inspectorSearch"
                placeholder="Find by display name or ItemKey..." />
       </div>
-      <div class="equip-layout" style="grid-template-columns: 320px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 320px;">
         <div id="inspectorList"></div>
         <div id="inspectorDetail"></div>
       </div>

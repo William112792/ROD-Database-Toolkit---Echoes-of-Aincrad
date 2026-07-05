@@ -52,7 +52,7 @@ const WwiseAudioView = {
           <input type="text" class="search-input" id="wwiseSearchInput" placeholder="Search by event name or path..." />
         </div>
         <div class="toolbar" id="wwiseCategoryBar" style="margin:10px 0; flex-wrap:wrap;"></div>
-        <div class="equip-layout" style="grid-template-columns: 380px 1fr;">
+        <div class="equip-layout two-col" style="--list-col: 380px;">
           <div id="wwiseListPane" class="list-pane-self-managed"></div>
           <div id="wwiseDetailPane"></div>
         </div>

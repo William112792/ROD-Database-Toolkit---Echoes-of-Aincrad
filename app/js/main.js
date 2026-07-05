@@ -6,7 +6,8 @@
 const App = {
   currentRoute: "equipment",
   equipmentSubTab: "weapons", // "weapons" | "armor" | "swordSkills"
-  worldSubTab: "lore", // "lore" -- only sub-section built so far; structured the same way as equipmentSubTab so adding more later (Areas, etc.) is just another button + case
+  worldSubTab: "lore", // lore | towns | quests | areas | dungeons | gates -- structured the same way as equipmentSubTab; adding more is just another button + case
+  monstersSubTab: "monsters", // monsters | spawns | drops -- same pattern; converted from a single view when Spawns/Drops were added
   abilityMultiplierTable: null,
 
   async init() {
@@ -323,6 +324,10 @@ const App = {
         crumb.textContent = "Tools / Wwise Audio";
         WwiseAudioView.render(scroll);
         break;
+      case "modding-guides":
+        crumb.textContent = "Tools / Modding Guides";
+        ModdingGuidesView.render(scroll);
+        break;
       case "coverage":
         crumb.textContent = "Tools / Data Coverage Report";
         CoverageReportView.render(scroll);
@@ -332,8 +337,7 @@ const App = {
         BuildDashboardView.render(scroll);
         break;
       case "monsters":
-        crumb.textContent = "Database / Monsters";
-        MonstersBrowserView.render(scroll);
+        this.renderMonstersRoute(scroll);
         break;
       case "items":
         crumb.textContent = "Database / Items";
@@ -400,9 +404,55 @@ const App = {
    * renderEquipmentRoute so adding a second sub-tab later is just
    * another button + case, not a restructure.
    */
+  renderMonstersRoute(scroll) {
+    const crumb = document.getElementById("crumb");
+    const subLabels = { monsters: "Monsters", spawns: "Spawns", drops: "Drops", stats: "Stats" };
+    crumb.textContent = `Database / Monsters / ${subLabels[this.monstersSubTab] || capitalize(this.monstersSubTab)}`;
+
+    const subNav = document.createElement("div");
+    subNav.className = "equip-subnav";
+    subNav.innerHTML = `
+      <button class="equip-subnav-btn ${this.monstersSubTab === "monsters" ? "active" : ""}" id="subTabMonsters">👹 Monsters</button>
+      <button class="equip-subnav-btn ${this.monstersSubTab === "spawns" ? "active" : ""}" id="subTabSpawns">🧬 Spawns</button>
+      <button class="equip-subnav-btn ${this.monstersSubTab === "drops" ? "active" : ""}" id="subTabDrops">💰 Drops</button>
+      <button class="equip-subnav-btn ${this.monstersSubTab === "stats" ? "active" : ""}" id="subTabStats">📈 Stats</button>
+    `;
+    scroll.appendChild(subNav);
+
+    document.getElementById("subTabMonsters").addEventListener("click", () => {
+      this.monstersSubTab = "monsters";
+      this.renderRoute("monsters");
+    });
+    document.getElementById("subTabSpawns").addEventListener("click", () => {
+      this.monstersSubTab = "spawns";
+      this.renderRoute("monsters");
+    });
+    document.getElementById("subTabDrops").addEventListener("click", () => {
+      this.monstersSubTab = "drops";
+      this.renderRoute("monsters");
+    });
+    document.getElementById("subTabStats").addEventListener("click", () => {
+      this.monstersSubTab = "stats";
+      this.renderRoute("monsters");
+    });
+
+    const viewContainer = document.createElement("div");
+    scroll.appendChild(viewContainer);
+
+    if (this.monstersSubTab === "monsters") {
+      MonstersBrowserView.render(viewContainer);
+    } else if (this.monstersSubTab === "spawns") {
+      MonsterSpawnsBrowserView.render(viewContainer);
+    } else if (this.monstersSubTab === "drops") {
+      MonsterDropsBrowserView.render(viewContainer);
+    } else if (this.monstersSubTab === "stats") {
+      MonsterStatsBrowserView.render(viewContainer);
+    }
+  },
+
   renderWorldRoute(scroll) {
     const crumb = document.getElementById("crumb");
-    const subLabels = { lore: "Lore", towns: "Towns", quests: "Quests" };
+    const subLabels = { lore: "Lore", towns: "Towns", quests: "Quests", areas: "Areas", dungeons: "Dungeons", gates: "Gates", map: "Map" };
     crumb.textContent = `Database / World / ${subLabels[this.worldSubTab] || capitalize(this.worldSubTab)}`;
 
     const subNav = document.createElement("div");
@@ -411,6 +461,10 @@ const App = {
       <button class="equip-subnav-btn ${this.worldSubTab === "lore" ? "active" : ""}" id="subTabLore">📜 Lore</button>
       <button class="equip-subnav-btn ${this.worldSubTab === "towns" ? "active" : ""}" id="subTabTowns">🗺 Towns</button>
       <button class="equip-subnav-btn ${this.worldSubTab === "quests" ? "active" : ""}" id="subTabQuests">❖ Quests</button>
+      <button class="equip-subnav-btn ${this.worldSubTab === "areas" ? "active" : ""}" id="subTabAreas">⛰ Areas</button>
+      <button class="equip-subnav-btn ${this.worldSubTab === "dungeons" ? "active" : ""}" id="subTabDungeons">🏛 Dungeons</button>
+      <button class="equip-subnav-btn ${this.worldSubTab === "gates" ? "active" : ""}" id="subTabGates">🌀 Gates</button>
+      <button class="equip-subnav-btn ${this.worldSubTab === "map" ? "active" : ""}" id="subTabMap">📍 Map</button>
     `;
     scroll.appendChild(subNav);
 
@@ -426,6 +480,22 @@ const App = {
       this.worldSubTab = "quests";
       this.renderRoute("world");
     });
+    document.getElementById("subTabAreas").addEventListener("click", () => {
+      this.worldSubTab = "areas";
+      this.renderRoute("world");
+    });
+    document.getElementById("subTabDungeons").addEventListener("click", () => {
+      this.worldSubTab = "dungeons";
+      this.renderRoute("world");
+    });
+    document.getElementById("subTabGates").addEventListener("click", () => {
+      this.worldSubTab = "gates";
+      this.renderRoute("world");
+    });
+    document.getElementById("subTabMap").addEventListener("click", () => {
+      this.worldSubTab = "map";
+      this.renderRoute("world");
+    });
 
     const viewContainer = document.createElement("div");
     scroll.appendChild(viewContainer);
@@ -436,6 +506,14 @@ const App = {
       TownsBrowserView.render(viewContainer);
     } else if (this.worldSubTab === "quests") {
       QuestsBrowserView.render(viewContainer);
+    } else if (this.worldSubTab === "areas") {
+      AreasBrowserView.render(viewContainer);
+    } else if (this.worldSubTab === "map") {
+      WorldMapBrowserView.render(viewContainer);
+    } else if (this.worldSubTab === "dungeons") {
+      DungeonsBrowserView.render(viewContainer);
+    } else if (this.worldSubTab === "gates") {
+      GatesBrowserView.render(viewContainer);
     }
   },
 

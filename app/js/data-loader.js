@@ -43,6 +43,45 @@ const DataStore = {
   townIndex: null,         // { count, namedCount, file }
   townLocalization: {},    // { nameKey: { name, verified, source } } -- for currentLanguage
   townLocalizationManifest: null,
+  areaList: [],            // flat list, 179 areas (176 official AreaTitle_* keys + 3 spawner-referenced unofficial *_SA_02 keys) -- NO data-table list file exists for areas (confirmed), the official localization key set IS the registry
+  areaByKey: {},           // { "AreaTitle_FortifiedHills": area }
+  areaIndex: null,         // { count, officialCount, unofficialKeys, dungeonLinkedCount, terminalTotal, areasWithTerminals, levelScanAvailable, ... }
+  areaLocalization: {},    // { areaKey: { name, verified, source, dungeonName, dungeonNameVerified } } -- for currentLanguage; names are already template-substituted server-side ({Rep_DungeonName_X} -> real dungeon name)
+  areaLocalizationManifest: null,
+  dungeonList: [],         // flat list, 17 named dungeons (DungeonName_* keys -- identical set in all 13 languages, verified) -- like Areas, NO data-table list file exists; the localization key set is the registry
+  dungeonByKey: {},        // { "DungeonName_NTR_Blue": dungeon }
+  dungeonIndex: null,      // { count, withGates, generationUnassigned, dngScanAvailable, dngFamilyLevelCounts, ... }
+  dungeonLocalization: {}, // { dungeonKey: { name, verified, source } } -- for currentLanguage
+  dungeonLocalizationManifest: null,
+  gateList: [],            // flat list, 192 teleport gates from DA_InGame's per-floor WorldDatas registry
+  gateById: {},            // { "WT_TOB": gate }
+  gateIndex: null,         // { count, byFloor, byType, withCoordinates, withMapPieces, dungeonAttributed, ... }
+  worldMapIndex: null,     // { areaCount, areasWithTextures, terminalCoordinates, markerPlacements, ... }
+  gateLocalization: {},    // { nameKey: { name, verified, source } } -- keyed by the gate's LOCALIZATION KEY, not its ID (multiple gates can share one key)
+  gateLocalizationManifest: null,
+  spawnGroups: [],         // flat, 1514 spawn composition groups (DT_CharacterGroupTable_WL01/02)
+  spawnLots: [],           // flat, 1481 weighted group lotteries (DT_CharacterGroupLotTable_WL01/02)
+  spawnPops: [],           // flat, 340 socket pop configs (DT_SocketPopTable_WL01/02)
+  spawnIndex: null,        // { groupCount, lotCount, popCount, levelDefaultSlots, xpCoefCurve, damageCoefCurve, ... }
+  monsterStatsIndex: null, // { count, withCurve, missingCurve, families, curveStats, difficultyLevels }
+  monsterDrops: [],        // flat, 242 reward rows with resolved item pools (DT_RewardLotTable + DT_ItemLotTable)
+  monsterDropIndex: null,
+  monsterDropLocalization: {}, // { itemKey: { name, verified, source } } for currentLanguage -- resolvable drop item names only; Cost/Col/Invalid slots have itemKey=null and show raw category+id
+  monsterDropLocalizationManifest: null,
+  npcList: [],             // flat, 183 NPCs (114 with data files + 69 roster-only; names DON'T resolve -- 0/114 NameKeys exist in any language, confirmed)
+  npcIndex: null,
+  activeSkills: [],        // flat, 10 rows -- names are internal developer strings, no localization exists (confirmed)
+  activeSkillIndex: null,
+  ailmentList: [],         // flat, 9 officially named status effects (tutorial localization pairs)
+  ailmentIndex: null,      // includes the state-icon inventory (9 bad / 9 good / generics -- pairing to ailments NOT confirmed)
+  ailmentLocalization: {}, // { code|_general: { name, description, verified, source } } for currentLanguage
+  ailmentLocalizationManifest: null,
+  shopList: [],            // flat, 6 shops -- CONFIRMED: shops sell recipes (all 59 stock entries resolve 1:1 to recipe ItemKeys); which shop is in which town is NOT confirmed by any field
+  shopIndex: null,
+  chestList: [],           // flat, 526 fixed treasure boxes (DT_FixTBoxTable), pools resolved by the same resolver Drops uses
+  chestIndex: null,
+  chestLocalization: {},   // { itemKey: { name, verified, source } } for currentLanguage -- chest pool item names
+  chestLocalizationManifest: null,
   questList: [],           // flat list, 5 Main quests
   questByID: {},           // { "0001": quest, ... }
   questIndex: null,        // { count, file, categories, note }
@@ -188,6 +227,76 @@ const DataStore = {
       this.questByID[q.questId] = q;
     }
 
+    // Areas -- same single-flat-file shape as Lore/Towns/Quests. The
+    // list itself comes from the official localization's AreaTitle_*
+    // key set (no data-table list file exists for areas at all,
+    // confirmed by search), so unlike every other category the "raw
+    // data" and the localization share a source -- the per-area
+    // cross-references (terminals/spawner levels/quest refs) are what
+    // the pipeline adds from real data on top of that key registry.
+    this.areaIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Areas/_index.json`);
+    this.areaList = await fetchJSON(`${CONTENT_ROOT}/${this.areaIndex.file}`);
+    for (const a of this.areaList) {
+      this.areaByKey[a.areaKey] = a;
+    }
+
+    // Dungeons and Gates -- both single flat files. Dungeons shares
+    // Areas' registry situation (no data-table list file, the 17
+    // DungeonName_* keys ARE the list); Gates flattens DA_InGame's
+    // 192-entry per-floor terminal registry, one row per gate.
+    this.dungeonIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Dungeons/_index.json`);
+    this.dungeonList = await fetchJSON(`${CONTENT_ROOT}/${this.dungeonIndex.file}`);
+    for (const d of this.dungeonList) {
+      this.dungeonByKey[d.dungeonKey] = d;
+    }
+
+    this.gateIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Gates/_index.json`);
+    this.gateList = await fetchJSON(`${CONTENT_ROOT}/${this.gateIndex.file}`);
+    for (const g of this.gateList) {
+      this.gateById[g.id] = g;
+    }
+
+    // World Map (index only -- WorldMap.json itself, ~124 areas with
+    // pieces/markers, is lazy-loaded by WorldMapBrowserView on first
+    // open, same pattern as the Asset Inspector's large catalogs).
+    try {
+      this.worldMapIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/WorldMap/_index.json`);
+    } catch (e) {
+      this.worldMapIndex = null;
+    }
+
+    // Monster Spawns (three flat files: the Pop -> Lot -> Group chain)
+    // and Monster Drops (reward rows with their resolved item pools).
+    this.spawnIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/MonsterSpawns/_index.json`);
+    this.spawnGroups = await fetchJSON(`${CONTENT_ROOT}/${this.spawnIndex.files.groups}`);
+    this.spawnLots = await fetchJSON(`${CONTENT_ROOT}/${this.spawnIndex.files.lots}`);
+    this.spawnPops = await fetchJSON(`${CONTENT_ROOT}/${this.spawnIndex.files.pops}`);
+
+    this.monsterDropIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/MonsterDrops/_index.json`);
+    this.monsterDrops = await fetchJSON(`${CONTENT_ROOT}/${this.monsterDropIndex.file}`);
+
+    // Monster Stats (index only -- MonsterStats.json itself is
+    // lazy-loaded by MonsterStatsBrowserView on first tab open).
+    try {
+      this.monsterStatsIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/MonsterStats/_index.json`);
+    } catch (e) {
+      this.monsterStatsIndex = null;
+    }
+
+    // NPCs / Active Skills / Ailments (the Characters cluster's three
+    // newest tabs -- flat files, no byKey maps needed at this size).
+    this.npcIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/NPCs/_index.json`);
+    this.npcList = await fetchJSON(`${CONTENT_ROOT}/${this.npcIndex.file}`);
+    this.activeSkillIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/ActiveSkills/_index.json`);
+    this.activeSkills = await fetchJSON(`${CONTENT_ROOT}/${this.activeSkillIndex.file}`);
+    this.ailmentIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Ailments/_index.json`);
+    this.ailmentList = await fetchJSON(`${CONTENT_ROOT}/${this.ailmentIndex.file}`);
+
+    this.shopIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Shops/_index.json`);
+    this.shopList = await fetchJSON(`${CONTENT_ROOT}/${this.shopIndex.file}`);
+    this.chestIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Chests/_index.json`);
+    this.chestList = await fetchJSON(`${CONTENT_ROOT}/${this.chestIndex.file}`);
+
     // Characters is the same flat-list shape as Lore (no sub-
     // categories), plus two extra fetches: the full Partner stat
     // table (small enough -- 7 partners x 200 levels -- to load
@@ -271,6 +380,48 @@ const DataStore = {
     const questLangMeta = this.questLocalizationManifest[this.currentLanguage]
       || this.questLocalizationManifest[this.questLocalizationManifest._defaultLanguage];
     this.questLocalization = await fetchJSON(`${CONTENT_ROOT}/${questLangMeta.file}`);
+
+    this.areaLocalizationManifest = await fetchJSON(
+      `${CONTENT_ROOT}/DataAssets/Database/Areas/Localization/_manifest.json`
+    );
+    const areaLangMeta = this.areaLocalizationManifest[this.currentLanguage]
+      || this.areaLocalizationManifest[this.areaLocalizationManifest._defaultLanguage];
+    this.areaLocalization = await fetchJSON(`${CONTENT_ROOT}/${areaLangMeta.file}`);
+
+    this.dungeonLocalizationManifest = await fetchJSON(
+      `${CONTENT_ROOT}/DataAssets/Database/Dungeons/Localization/_manifest.json`
+    );
+    const dungeonLangMeta = this.dungeonLocalizationManifest[this.currentLanguage]
+      || this.dungeonLocalizationManifest[this.dungeonLocalizationManifest._defaultLanguage];
+    this.dungeonLocalization = await fetchJSON(`${CONTENT_ROOT}/${dungeonLangMeta.file}`);
+
+    this.gateLocalizationManifest = await fetchJSON(
+      `${CONTENT_ROOT}/DataAssets/Database/Gates/Localization/_manifest.json`
+    );
+    const gateLangMeta = this.gateLocalizationManifest[this.currentLanguage]
+      || this.gateLocalizationManifest[this.gateLocalizationManifest._defaultLanguage];
+    this.gateLocalization = await fetchJSON(`${CONTENT_ROOT}/${gateLangMeta.file}`);
+
+    this.monsterDropLocalizationManifest = await fetchJSON(
+      `${CONTENT_ROOT}/DataAssets/Database/MonsterDrops/Localization/_manifest.json`
+    );
+    const dropLangMeta = this.monsterDropLocalizationManifest[this.currentLanguage]
+      || this.monsterDropLocalizationManifest[this.monsterDropLocalizationManifest._defaultLanguage];
+    this.monsterDropLocalization = await fetchJSON(`${CONTENT_ROOT}/${dropLangMeta.file}`);
+
+    this.ailmentLocalizationManifest = await fetchJSON(
+      `${CONTENT_ROOT}/DataAssets/Database/Ailments/Localization/_manifest.json`
+    );
+    const ailmentLangMeta = this.ailmentLocalizationManifest[this.currentLanguage]
+      || this.ailmentLocalizationManifest[this.ailmentLocalizationManifest._defaultLanguage];
+    this.ailmentLocalization = await fetchJSON(`${CONTENT_ROOT}/${ailmentLangMeta.file}`);
+
+    this.chestLocalizationManifest = await fetchJSON(
+      `${CONTENT_ROOT}/DataAssets/Database/Chests/Localization/_manifest.json`
+    );
+    const chestLangMeta = this.chestLocalizationManifest[this.currentLanguage]
+      || this.chestLocalizationManifest[this.chestLocalizationManifest._defaultLanguage];
+    this.chestLocalization = await fetchJSON(`${CONTENT_ROOT}/${chestLangMeta.file}`);
 
     this.characterLocalizationManifest = await fetchJSON(
       `${CONTENT_ROOT}/DataAssets/Database/Characters/Localization/_manifest.json`
@@ -405,6 +556,36 @@ const DataStore = {
     if (this.questLocalizationManifest && this.questLocalizationManifest[langCode]) {
       const questLangMeta = this.questLocalizationManifest[langCode];
       this.questLocalization = await fetchJSON(`${CONTENT_ROOT}/${questLangMeta.file}`);
+    }
+
+    if (this.areaLocalizationManifest && this.areaLocalizationManifest[langCode]) {
+      const areaLangMeta = this.areaLocalizationManifest[langCode];
+      this.areaLocalization = await fetchJSON(`${CONTENT_ROOT}/${areaLangMeta.file}`);
+    }
+
+    if (this.dungeonLocalizationManifest && this.dungeonLocalizationManifest[langCode]) {
+      const dungeonLangMeta = this.dungeonLocalizationManifest[langCode];
+      this.dungeonLocalization = await fetchJSON(`${CONTENT_ROOT}/${dungeonLangMeta.file}`);
+    }
+
+    if (this.gateLocalizationManifest && this.gateLocalizationManifest[langCode]) {
+      const gateLangMeta = this.gateLocalizationManifest[langCode];
+      this.gateLocalization = await fetchJSON(`${CONTENT_ROOT}/${gateLangMeta.file}`);
+    }
+
+    if (this.monsterDropLocalizationManifest && this.monsterDropLocalizationManifest[langCode]) {
+      const dropLangMeta = this.monsterDropLocalizationManifest[langCode];
+      this.monsterDropLocalization = await fetchJSON(`${CONTENT_ROOT}/${dropLangMeta.file}`);
+    }
+
+    if (this.ailmentLocalizationManifest && this.ailmentLocalizationManifest[langCode]) {
+      const ailmentLangMeta = this.ailmentLocalizationManifest[langCode];
+      this.ailmentLocalization = await fetchJSON(`${CONTENT_ROOT}/${ailmentLangMeta.file}`);
+    }
+
+    if (this.chestLocalizationManifest && this.chestLocalizationManifest[langCode]) {
+      const chestLangMeta = this.chestLocalizationManifest[langCode];
+      this.chestLocalization = await fetchJSON(`${CONTENT_ROOT}/${chestLangMeta.file}`);
     }
 
     if (this.characterLocalizationManifest && this.characterLocalizationManifest[langCode]) {
@@ -857,6 +1038,107 @@ const DataStore = {
   },
   getAllTownsFlat() {
     return this.townList;
+  },
+
+  // Area getters -- own localization namespace by design, same
+  // reasoning Monsters/Lore/Towns/Quests each keep their own (not an
+  // inconsistency: deliberate per-category separation).
+  getAreaDisplayName(area) {
+    const entry = this.areaLocalization[area.areaKey];
+    if (entry && entry.name) return entry.name;
+    return area.areaKey;
+  },
+  isAreaNameVerified(area) {
+    const entry = this.areaLocalization[area.areaKey];
+    return !!(entry && entry.verified);
+  },
+  getAreaDungeonName(area) {
+    // The linked dungeon's own localized display name, resolved
+    // server-side per language (same convention quests use) -- empty
+    // string when the area has no dungeon link.
+    const entry = this.areaLocalization[area.areaKey];
+    return (entry && entry.dungeonName) || "";
+  },
+  getAllAreasFlat() {
+    return this.areaList;
+  },
+
+  // Dungeon getters
+  getDungeonDisplayName(dungeon) {
+    const entry = this.dungeonLocalization[dungeon.dungeonKey];
+    if (entry && entry.name) return entry.name;
+    return dungeon.dungeonKey;
+  },
+  isDungeonNameVerified(dungeon) {
+    const entry = this.dungeonLocalization[dungeon.dungeonKey];
+    return !!(entry && entry.verified);
+  },
+  getAllDungeonsFlat() {
+    return this.dungeonList;
+  },
+
+  // Gate getters -- localization is keyed by the gate's nameKey, NOT
+  // its ID (multiple gates share one key, e.g. two gates both keyed
+  // AreaTitle_BlueDropCaveLowermost), so resolution goes through
+  // gate.nameKey deliberately.
+  getGateDisplayName(gate) {
+    const entry = this.gateLocalization[gate.nameKey];
+    if (entry && entry.name) return entry.name;
+    return gate.id;
+  },
+  isGateNameVerified(gate) {
+    const entry = this.gateLocalization[gate.nameKey];
+    return !!(entry && entry.verified);
+  },
+  getAllGatesFlat() {
+    return this.gateList;
+  },
+
+  // Monster spawn/drop getters. Monster names for enemy codes join
+  // through the SAME loaded Monsters data (titleKey EnemyName_*) so
+  // the tabs can never disagree.
+  _monsterByTitleKey: null,
+  getMonsterByTitleKey(titleKey) {
+    if (!this._monsterByTitleKey) {
+      this._monsterByTitleKey = {};
+      for (const m of this.getAllMonstersFlat()) {
+        if (m.titleKey) this._monsterByTitleKey[m.titleKey] = m;
+      }
+    }
+    return this._monsterByTitleKey[titleKey] || null;
+  },
+  getDropItemName(itemKey) {
+    const entry = this.monsterDropLocalization[itemKey];
+    if (entry && entry.name) return entry.name;
+    return itemKey;
+  },
+  isDropItemNameVerified(itemKey) {
+    const entry = this.monsterDropLocalization[itemKey];
+    return !!(entry && entry.verified);
+  },
+
+  // Shop/Chest getters
+  getChestItemName(itemKey) {
+    const entry = this.chestLocalization[itemKey];
+    return (entry && entry.name) || itemKey;
+  },
+  _recipeByItemKey: null,
+  getRecipeByItemKey(itemKey) {
+    if (!this._recipeByItemKey) {
+      this._recipeByItemKey = {};
+      for (const r of this.getAllRecipesFlat()) this._recipeByItemKey[r.itemKey] = r;
+    }
+    return this._recipeByItemKey[itemKey] || null;
+  },
+
+  // Ailment getters
+  getAilmentName(code) {
+    const entry = this.ailmentLocalization[code];
+    return (entry && entry.name) || code;
+  },
+  getAilmentDescription(code) {
+    const entry = this.ailmentLocalization[code];
+    return (entry && entry.description) || "";
   },
 
   // Quest getters

@@ -51,7 +51,7 @@ const BpInspectorView = {
         </label>
       </div>
 
-      <div class="equip-layout" style="grid-template-columns: 420px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 420px;">
         <div id="bpFunctionListPane" class="list-pane-self-managed"></div>
         <div id="bpDetailPane"></div>
       </div>

@@ -13,21 +13,71 @@
 <div id="app">
   <div class="grid-backdrop" id="gridBackdrop">
     <div class="bg-rings">
+      <!-- "Digital retina" lens, rebuilt to match the game's Database
+           screen (confirmed against two in-game screenshots): a dark
+           sphere core, a soft glow ring, and MANY broken arc rings at
+           different radii rotating at different speeds — alternating
+           clockwise / counter-clockwise per ring, like a camera lens
+           iris. Arc lengths are deliberately irregular (mixed long
+           thin sweeps and short thick segments) because uniform
+           dashes read as a loading spinner, not a lens. -->
       <svg viewBox="0 0 720 720" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="360" cy="360" r="340" fill="none" stroke="rgba(135,200,210,0.12)" stroke-width="1"/>
-        <circle cx="360" cy="360" r="220" fill="none" stroke="rgba(135,200,210,0.10)" stroke-width="1"/>
-        <circle cx="360" cy="360" r="120" fill="none" stroke="rgba(135,200,210,0.10)" stroke-width="1"/>
-        <g class="bg-ring-outer" stroke="rgba(135,200,210,0.4)" stroke-width="2" fill="none">
-          <path d="M 360 20 A 340 340 0 0 1 660 200" />
-          <path d="M 100 540 A 340 340 0 0 1 200 660" />
+        <defs>
+          <radialGradient id="bgLensCore" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"  stop-color="rgba(0,8,16,0.62)"/>
+            <stop offset="55%" stop-color="rgba(0,10,20,0.42)"/>
+            <stop offset="82%" stop-color="rgba(0,14,24,0.14)"/>
+            <stop offset="100%" stop-color="rgba(0,14,24,0)"/>
+          </radialGradient>
+          <filter id="bgLensGlow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="7"/>
+          </filter>
+        </defs>
+
+        <!-- Dark sphere core (the lens body) -->
+        <circle cx="360" cy="360" r="330" fill="url(#bgLensCore)"/>
+
+        <!-- Soft glow ring around the sphere's edge -->
+        <circle cx="360" cy="360" r="268" fill="none" stroke="rgba(90,210,225,0.20)" stroke-width="10" filter="url(#bgLensGlow)"/>
+        <circle cx="360" cy="360" r="268" fill="none" stroke="rgba(140,225,235,0.16)" stroke-width="2"/>
+
+        <!-- Static faint guide circles -->
+        <circle cx="360" cy="360" r="340" fill="none" stroke="rgba(135,200,210,0.10)" stroke-width="1"/>
+        <circle cx="360" cy="360" r="205" fill="none" stroke="rgba(135,200,210,0.08)" stroke-width="1"/>
+        <circle cx="360" cy="360" r="96"  fill="none" stroke="rgba(135,200,210,0.08)" stroke-width="1"/>
+
+        <!-- Rotating arc rings, outermost to innermost.
+             Direction alternates per ring; speed rises toward center. -->
+        <g class="bg-ring-r1" stroke="rgba(135,200,210,0.30)" stroke-width="2" fill="none" stroke-linecap="round">
+          <path d="M 360 20 A 340 340 0 0 1 655 190"/>
+          <path d="M 84 558 A 340 340 0 0 1 27 292"/>
         </g>
-        <g class="bg-ring-mid" stroke="rgba(135,200,210,0.45)" stroke-width="2" fill="none">
-          <path d="M 140 360 A 220 220 0 0 1 240 175" />
-          <path d="M 480 545 A 220 220 0 0 1 580 360" />
+        <g class="bg-ring-r2" stroke="rgba(135,210,220,0.34)" stroke-width="3" fill="none" stroke-linecap="round">
+          <path d="M 360 55 A 305 305 0 0 1 581 149"/>
+          <path d="M 472 644 A 305 305 0 0 1 248 644"/>
+          <path d="M 72 261 A 305 305 0 0 1 132 157"/>
         </g>
-        <g class="bg-ring-inner" stroke="rgba(135,200,210,0.5)" stroke-width="2" fill="none">
-          <path d="M 360 240 A 120 120 0 0 1 467 300" />
-          <path d="M 253 420 A 120 120 0 0 1 360 480" />
+        <g class="bg-ring-r3" stroke="rgba(160,230,240,0.40)" stroke-width="5" fill="none" stroke-linecap="round">
+          <path d="M 360 92 A 268 268 0 0 1 546 167"/>
+          <path d="M 191 568 A 268 268 0 0 1 115 468"/>
+        </g>
+        <g class="bg-ring-r4" stroke="rgba(135,210,220,0.34)" stroke-width="2" fill="none" stroke-linecap="round">
+          <path d="M 360 155 A 205 205 0 0 1 556 299"/>
+          <path d="M 360 565 A 205 205 0 0 1 197 485"/>
+          <path d="M 163 302 A 205 205 0 0 1 228 203"/>
+        </g>
+        <g class="bg-ring-r5" stroke="rgba(160,230,240,0.36)" stroke-width="4" fill="none" stroke-linecap="round">
+          <path d="M 360 205 A 155 155 0 0 1 502 299"/>
+          <path d="M 258 477 A 155 155 0 0 1 214 413"/>
+          <path d="M 470 470 A 155 155 0 0 1 415 505"/>
+        </g>
+        <g class="bg-ring-r6" stroke="rgba(135,210,220,0.32)" stroke-width="2" fill="none" stroke-linecap="round">
+          <path d="M 360 264 A 96 96 0 0 1 451 329"/>
+          <path d="M 302 437 A 96 96 0 0 1 267 385"/>
+        </g>
+        <g class="bg-ring-r7" stroke="rgba(170,235,245,0.34)" stroke-width="3" fill="none" stroke-linecap="round">
+          <path d="M 360 305 A 55 55 0 0 1 414 348"/>
+          <path d="M 332 407 A 55 55 0 0 1 306 372"/>
         </g>
       </svg>
     </div>
@@ -55,11 +105,11 @@
         <select id="langSelector" class="lang-selector-select"></select>
       </div>
       <ul class="nav-list" id="navList">
-        <li class="nav-item" data-route="world" title="World (Lore built; Areas and other sections coming later)"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_World.png" alt="" /></span><span class="nav-label">World</span></li>
-        <li class="nav-item" data-route="items" title="Items"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Item.png" alt="" /></span><span class="nav-label">Items</span></li>
+        <li class="nav-item" data-route="world" title="World (Lore, Towns, Quests, Areas, Dungeons, Gates)"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_World.png" alt="" /></span><span class="nav-label">World</span></li>
+        <li class="nav-item" data-route="items" title="Items (Catalog, Recipes, Shops, Chests)"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Item.png" alt="" /></span><span class="nav-label">Items</span></li>
         <li class="nav-item active" data-route="equipment" title="Equipment"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Equip.png" alt="" /></span><span class="nav-label">Equipment</span></li>
-        <li class="nav-item" data-route="monsters" title="Monsters"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Enemy.png" alt="" /></span><span class="nav-label">Monsters</span></li>
-        <li class="nav-item" data-route="characters" title="Characters"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIconCharacter.png" alt="" /></span><span class="nav-label">Characters</span></li>
+        <li class="nav-item" data-route="monsters" title="Monsters (Monsters, Spawns, Drops)"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIcon_Enemy.png" alt="" /></span><span class="nav-label">Monsters</span></li>
+        <li class="nav-item" data-route="characters" title="Characters (Characters, Partners, Customization, Player, NPCs, Active Skills, Ailments)"><span class="nav-icon"><img src="Content/ROD/Widget/Database/Texture/T_CategoryIconCharacter.png" alt="" /></span><span class="nav-label">Characters</span></li>
       </ul>
       <ul class="nav-list" id="toolList" style="margin-top: 6px;">
         <li class="nav-item" data-route="inspector" title="JSON Inspector"><span class="nav-icon">{ }</span><span class="nav-label">JSON Inspector</span></li>
@@ -67,6 +117,7 @@
         <li class="nav-item" data-route="bp-inspector" title="BP Inspector"><span class="nav-icon">⌘</span><span class="nav-label">BP Inspector</span></li>
         <li class="nav-item" data-route="asset-inspector" title="Asset Inspector"><span class="nav-icon">◈</span><span class="nav-label">Asset Inspector</span></li>
         <li class="nav-item" data-route="wwise-audio" title="Wwise Audio"><span class="nav-icon">♪</span><span class="nav-label">Wwise Audio</span></li>
+        <li class="nav-item" data-route="modding-guides" title="Modding Guides (write and browse Markdown guides with screenshots)"><span class="nav-icon">📓</span><span class="nav-label">Modding Guides</span></li>
         <li class="nav-item" data-route="coverage" title="Data Coverage"><span class="nav-icon">✓</span><span class="nav-label">Data Coverage</span></li>
       </ul>
       <ul class="nav-list" id="buildToolList" style="margin-top: 6px;">
@@ -101,6 +152,7 @@
 <script src="app/js/data-loader.js"></script>
 <script src="app/js/disclaimer-modal.js"></script>
 <script src="app/js/budget-tracker-modal.js"></script>
+<script src="app/js/ai-skill-modal.js"></script>
 <script src="app/js/animation-settings.js"></script>
 <script src="app/js/background-fx.js"></script>
 <script src="app/js/loading-skeleton.js"></script>
@@ -111,12 +163,27 @@
 <script src="app/js/views/monsters-browser.js"></script>
 <script src="app/js/views/items-browser.js"></script>
 <script src="app/js/views/lore-browser.js"></script>
+<script src="app/js/views/world-map-browser.js"></script>
 <script src="app/js/views/towns-browser.js"></script>
 <script src="app/js/views/quests-browser.js"></script>
+<script src="app/js/views/areas-browser.js"></script>
+<script src="app/js/views/dungeons-browser.js"></script>
+<script src="app/js/views/gates-browser.js"></script>
+<script src="app/js/views/monster-spawns-browser.js"></script>
+<script src="app/js/views/monster-drops-browser.js"></script>
+<script src="app/js/views/monster-stats-browser.js"></script>
+<script src="app/js/views/npcs-browser.js"></script>
+<script src="app/js/views/active-skills-browser.js"></script>
+<script src="app/js/views/ailments-browser.js"></script>
+<script src="app/js/views/shops-browser.js"></script>
+<script src="app/js/views/chests-browser.js"></script>
+<script src="app/js/views/modding-guides-browser.js"></script>
 <script src="app/js/views/characters-browser.js"></script>
 <script src="app/js/views/json-inspector.js"></script>
 <script src="app/js/views/dt-inspector.js"></script>
 <script src="app/js/views/bp-inspector.js"></script>
+<script src="app/js/views/skeleton-assets-browser.js"></script>
+<script src="app/js/views/animation-assets-browser.js"></script>
 <script src="app/js/views/asset-inspector.js"></script>
 <script src="app/js/views/coverage-report.js"></script>
 <script src="app/js/views/build-dashboard.js"></script>

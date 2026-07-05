@@ -63,6 +63,8 @@ const ItemsBrowserView = {
     const tabs = [
       ["catalog", "Catalog"],
       ["recipes", "Recipes"],
+      ["shops", "Shops"],
+      ["chests", "Chests"],
     ];
     el.innerHTML = tabs.map(([key, label]) =>
       `<button class="toggle-btn${this.state.activeMainTab === key ? " active" : ""}" data-maintab="${key}">${label}</button>`
@@ -81,6 +83,14 @@ const ItemsBrowserView = {
     container.innerHTML = "";
     if (this.state.activeMainTab === "recipes") {
       this.renderRecipesTab(container);
+    } else if (this.state.activeMainTab === "shops") {
+      // Shops and Chests delegate to fully separate view files
+      // (shops-browser.js / chests-browser.js) rather than growing
+      // this file -- the same keep-each-tab-separate reasoning the
+      // Characters view's newest tabs follow (DESIGN 8.6).
+      ShopsBrowserView.render(container);
+    } else if (this.state.activeMainTab === "chests") {
+      ChestsBrowserView.render(container);
     } else {
       this.renderCatalogTab(container);
     }
@@ -419,7 +429,7 @@ const ItemsBrowserView = {
       <div class="coverage-banner" id="recipeQuickCoverage"></div>
       <div class="type-tabs" id="recipeCategoryTabs"></div>
       <div class="toolbar" id="recipeToolbar"></div>
-      <div class="equip-layout" style="grid-template-columns: 360px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 360px;">
         <div id="recipeListPane"></div>
         <div id="recipeDetailPane"></div>
       </div>

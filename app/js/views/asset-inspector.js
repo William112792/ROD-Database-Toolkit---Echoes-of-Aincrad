@@ -51,9 +51,15 @@ const AssetInspectorView = {
     const el = document.getElementById("assetMainTabBar");
     const matCount = DataStore.assetInspectorIndex ? DataStore.assetInspectorIndex.materialCount : 0;
     const meshCount = DataStore.assetInspectorIndex ? DataStore.assetInspectorIndex.meshCount : 0;
+    const skelCount = (DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.skeletons)
+      ? DataStore.assetInspectorIndex.skeletons.count : 0;
+    const animCount = (DataStore.assetInspectorIndex && DataStore.assetInspectorIndex.animations)
+      ? DataStore.assetInspectorIndex.animations.count : 0;
     const tabs = [
       ["materials", `Materials (${matCount})`],
       ["meshes", `Meshes (${meshCount})`],
+      ["skeletons", `Skeletons (${skelCount})`],
+      ["animations", `Animations (${animCount})`],
     ];
     el.innerHTML = tabs.map(([key, label]) =>
       `<button class="toggle-btn${this.state.activeMainTab === key ? " active" : ""}" data-maintab="${key}">${label}</button>`
@@ -72,6 +78,14 @@ const AssetInspectorView = {
     container.innerHTML = "";
     if (this.state.activeMainTab === "meshes") {
       this.renderMeshesTab(container);
+    } else if (this.state.activeMainTab === "skeletons") {
+      // The two newest tabs delegate to fully separate view files
+      // (skeleton-assets-browser.js / animation-assets-browser.js),
+      // the same keep-each-tab-separate pattern Characters and Items
+      // use for their newest tabs (DESIGN 8.6).
+      SkeletonAssetsBrowserView.render(container);
+    } else if (this.state.activeMainTab === "animations") {
+      AnimationAssetsBrowserView.render(container);
     } else {
       this.renderMaterialsTab(container);
     }
@@ -100,7 +114,7 @@ const AssetInspectorView = {
           <option value="base">Base Material only</option>
         </select>
       </div>
-      <div class="equip-layout" style="grid-template-columns: 380px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 380px;">
         <div id="assetMaterialListPane" class="list-pane-self-managed"></div>
         <div id="assetMaterialDetailPane"></div>
       </div>
@@ -268,7 +282,7 @@ const AssetInspectorView = {
     const wrap = document.createElement("div");
     wrap.innerHTML = `
       <div class="toolbar" id="assetMeshSlotTabs" style="margin-bottom:10px; flex-wrap:wrap;"></div>
-      <div class="equip-layout" style="grid-template-columns: 380px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 380px;">
         <div id="assetMeshListPane" class="list-pane-self-managed"></div>
         <div id="assetMeshDetailPane"></div>
       </div>

@@ -41,7 +41,7 @@ const DtInspectorView = {
         <input type="text" class="search-input" id="dtInspectorSearch"
                placeholder="Find by table name, path, or field name..." />
       </div>
-      <div class="equip-layout" style="grid-template-columns: 360px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 360px;">
         <div id="dtInspectorList"></div>
         <div id="dtInspectorDetail"></div>
       </div>
@@ -272,7 +272,7 @@ const DtInspectorView = {
     const selectedRow = this.state.selectedRowKey !== null ? rows[this.state.selectedRowKey] : null;
 
     return `
-      <div class="equip-layout" style="grid-template-columns: 240px 1fr; margin-top:14px;">
+      <div class="equip-layout two-col" style="--list-col: 240px; margin-top:14px;">
         <div class="hud-panel" id="dtRowList" style="max-height:calc(100vh - 420px); overflow-y:auto; padding:8px;">
           ${rowListHtml || '<div class="empty-state" style="padding:16px;"><p>No rows.</p></div>'}
         </div>

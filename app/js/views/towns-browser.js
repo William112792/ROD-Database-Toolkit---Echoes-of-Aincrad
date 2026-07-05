@@ -20,7 +20,7 @@ const TownsBrowserView = {
     const wrap = document.createElement("div");
     wrap.innerHTML = `
       <div class="coverage-banner" id="townQuickCoverage"></div>
-      <div class="equip-layout" style="grid-template-columns: 320px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 320px;">
         <div id="townListPane"></div>
         <div id="townDetailPane"></div>
       </div>

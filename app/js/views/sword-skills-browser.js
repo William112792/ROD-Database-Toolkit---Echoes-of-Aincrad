@@ -77,7 +77,7 @@ const SwordSkillsBrowserView = {
       <div class="coverage-banner" id="ssQuickCoverage"></div>
       <div class="type-tabs" id="ssTypeTabs"></div>
       <div class="toolbar" id="ssToolbar"></div>
-      <div class="equip-layout" style="grid-template-columns: 360px 1fr;">
+      <div class="equip-layout two-col" style="--list-col: 360px;">
         <div id="ssListPane"></div>
         <div id="ssDetailPane"></div>
       </div>

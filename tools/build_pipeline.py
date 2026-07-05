@@ -34,6 +34,14 @@ import re
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 LAST_BUILD_STATUS_PATH = os.path.join(PROJECT_ROOT, ".last-build-status.json")
+# Cached copy of the last FULL status report (--status output). Written
+# every time --status computes fresh, read back by --status-cached: the
+# schema check really runs every section, which by 44 sections + the
+# Maps/DNG level scans takes minutes -- far too slow for the Build
+# Dashboard's page-load request (it produced a real 500/504 from a real
+# deployment). The dashboard now loads THIS instantly and re-runs the
+# real checks only on explicit request, as a background job.
+LAST_PIPELINE_STATUS_PATH = os.path.join(PROJECT_ROOT, ".last-pipeline-status.json")
 
 SRC = os.path.join(PROJECT_ROOT, "raw-export", "Content", "ROD")
 OUT = os.path.join(PROJECT_ROOT, "Content", "ROD")
@@ -231,6 +239,127 @@ ARMOR_TEXTURE_OVERRIDES = {
     ("Lower", 99): 1,
     ("Shield", 99): 3,  # Shield has no id 1 -- its lowest real id is 3
 }
+
+
+# The game's own map icon PNGs (Widget/3DMapCapture/MapIcon/IconImages)
+# are unrecolored MASK sprites, not final art: verified by direct pixel
+# sampling -- every icon's opaque pixels are pure red (255,0,0) for the
+# main shape and pure green (0,166,0-ish) for a secondary shape (almost
+# certainly a drop-shadow layer), meant for the game's own UI material
+# to tint at runtime. This toolkit has no such material/shader to run,
+# so build_map_icons() recolors them itself with real image processing:
+# the green channel becomes a soft, offset, dark drop shadow (for the
+# "make it look more 3D" request), and the red channel becomes a flat
+# fill in whichever color is confirmed for that icon type -- WHITE when
+# the true in-game color isn't confirmed, rather than guessing a color
+# and presenting it as fact.
+MAP_ICON_COLORS = {
+    # key: (source icon filename stem, target hex fill color, confirmed?)
+    # Confirmed by explicit user instruction this session.
+    "safeArea": ("T_Mapicon_SafetyArea", "#FFFFFF", True),
+    "warpTerminal": ("T_Mapicon_TeleportGate", "#FFFFFF", True),
+    "treasureChest": ("T_Mapicon_Treasure", "#FFD54A", True),
+    "waypoint": ("T_Mapicon_Pin", "#FFD54A", True),
+    "ark": ("T_Mapicon_KeyArc", "#B47CE5", True),
+    "seal": ("T_Mapicon_Seal", "#E5484D", True),
+    "magicalSeal": ("T_Mapicon_AmuletSeal", "#FF7AC6", True),
+    "sideQuestTrinket": ("T_Mapicon_SubQuestNPC_Order", "#FFD54A", True),
+    "townSmithy": ("T_Mapicon_Blacksmith", "#4CD97B", True),
+    "townChest": ("T_Mapicon_Chest", "#3FD5C8", True),
+    "townItemSeller": ("T_Mapicon_ItemShop", "#FFA23F", True),
+    # Not given an explicit color this session -- white per "white
+    # instead of red if we aren't sure of its color", not a guess.
+    "boss": ("T_Mapicon_BossEnemy", "#FFFFFF", False),
+    "monsterSpawn": ("T_Mapicon_Enemy", "#FFFFFF", False),
+    "material": ("T_Mapicon_Item", "#FFFFFF", False),
+    "missionObjective": ("T_Mapicon_OtherGimmick", "#FFFFFF", False),
+}
+
+
+def _hex_to_rgb(hexstr):
+    hexstr = hexstr.lstrip("#")
+    return tuple(int(hexstr[i:i+2], 16) for i in (0, 2, 4))
+
+
+def build_map_icons():
+    """
+    Builds Content/ROD/DataAssets/_MapIcons/<key>.png -- recolored,
+    shadowed versions of the game's raw red/green mask icon sprites
+    (see MAP_ICON_COLORS above for the full discovery). Real image
+    processing with PIL, run once at build time and cached as static
+    PNGs (consistent with the toolkit's pipeline-driven philosophy --
+    no runtime canvas/shader hacks in the browser):
+
+      1. Read the source icon's raw RGBA pixels.
+      2. Green-channel-dominant pixels (the shadow shape) become a
+         soft, downward-and-right offset, blurred, semi-transparent
+         black shadow -- giving the flat mask a sense of depth ("look
+         more 3D") instead of a second flat green shape.
+      3. Red-channel-dominant pixels (the main shape) become a flat
+         fill of the confirmed (or honestly-white-if-unconfirmed)
+         color, composited OVER the shadow.
+
+    Writes an _index.json recording, per icon key, whether its color
+    is confirmed (explicit user instruction) or defaulted to white
+    for being unconfirmed -- so the legend can visually/textually
+    distinguish the two rather than presenting every color as equally
+    certain.
+    """
+    from PIL import Image, ImageFilter
+    import numpy as np
+
+    icon_src_dir = os.path.join(SRC, "Widget/3DMapCapture/MapIcon/IconImages")
+    out_dir = os.path.join(OUT, "DataAssets/_MapIcons")
+    os.makedirs(out_dir, exist_ok=True)
+
+    index = {}
+    for key, (stem, hexcolor, confirmed) in MAP_ICON_COLORS.items():
+        src_path = os.path.join(icon_src_dir, f"{stem}.png")
+        if not os.path.exists(src_path):
+            continue
+        im = Image.open(src_path).convert("RGBA")
+        arr = np.array(im).astype(np.int16)
+        r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
+        opaque = a > 20
+        is_green = opaque & (g > r) & (g > 40)
+        is_red = opaque & (r >= g) & (r > 40)
+
+        h, w = r.shape
+        # Shadow layer: green-shape silhouette, offset down-right, blurred.
+        shadow_alpha = np.where(is_green, 160, 0).astype(np.uint8)
+        shadow_im = Image.fromarray(shadow_alpha, "L")
+        shadow_rgba = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        shadow_rgba.putalpha(shadow_im)
+        shadow_rgba = shadow_rgba.filter(ImageFilter.GaussianBlur(2.2))
+        canvas = Image.new("RGBA", (w + 6, h + 6), (0, 0, 0, 0))
+        canvas.alpha_composite(shadow_rgba, (4, 4))  # down-right offset
+
+        # Main shape: flat fill of the assigned color, full opacity
+        # where the red mask was opaque.
+        fill_rgb = _hex_to_rgb(hexcolor)
+        main_alpha = np.where(is_red, a, 0).astype(np.uint8)
+        main_rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        main_rgba[:, :, 0] = fill_rgb[0]
+        main_rgba[:, :, 1] = fill_rgb[1]
+        main_rgba[:, :, 2] = fill_rgb[2]
+        main_rgba[:, :, 3] = main_alpha
+        main_im = Image.fromarray(main_rgba, "RGBA")
+        canvas.alpha_composite(main_im, (1, 1))  # slight inset so shadow rim shows
+
+        out_path = os.path.join(out_dir, f"{key}.png")
+        canvas.save(out_path)
+        index[key] = {
+            "file": f"DataAssets/_MapIcons/{key}.png",
+            "color": hexcolor,
+            "colorConfirmed": confirmed,
+            "sourceIcon": f"Widget/3DMapCapture/MapIcon/IconImages/{stem}.png",
+        }
+
+    save_json(os.path.join(out_dir, "_index.json"), index)
+    confirmed_count = sum(1 for v in index.values() if v["colorConfirmed"])
+    print(f"  Map icons: {len(index)} recolored ({confirmed_count} confirmed colors, "
+          f"{len(index) - confirmed_count} defaulted to white -- unconfirmed)")
+    return index
 
 
 def build_textures():
@@ -2016,108 +2145,2585 @@ def build_quest_localization(all_quests):
     print(f"  Quest localization: {len(all_quests)} quests x {len(SUPPORTED_LANGUAGES)} languages")
 
 
+def build_areas():
     """
-    Walks every AkAudioEvent JSON under raw-export/Content/ROD/WwiseAudio/Events/
-    (4449 files, confirmed before this was written) and builds one
-    compact index for a dedicated Wwise Audio browser -- distinct from
-    DT Inspector, since these are single tiny records (no Rows/
-    Properties the way every other category here has), not rows in a
-    DataTable. Dumping 4449 "unrecognized shape" entries into DT
-    Inspector's flat list would be unusable; this instead preserves the
-    REAL organizational structure that already exists in the export
-    (the folder hierarchy + the event's own name), per the user's
-    request to make this "organized and readable" for someone trying
-    to find and replace a specific audio file.
+    Builds Content/ROD/DataAssets/Database/Areas/Areas.json -- the
+    World > Areas section.
 
-    For each event, extracts:
-      - The full relative folder path (the category structure already
-        used by the actual Wwise project -- e.g. SFX_Enemy/Wasp/...,
-        confirmed meaningful by inspection, not invented here) and the
-        event's own name (kept as-is, not algorithmically shortened --
-        the full name is already self-describing for the vast majority
-        of events, e.g. "Play_SFX_Enemy_Wasp_Voice_Hiss", and is exactly
-        what someone modding audio would grep for in the actual game
-        files, so a lossy "cleaned up" label would work against that
-        goal rather than for it).
-      - Per-language media file paths (.wem files inside the soundbank)
-        -- confirmed VO events specifically carry multiple language
-        variants as SEPARATE physical files (e.g. English(US) and
-        Japanese(JP) pointing at different Media/.../*.wem paths), which
-        is exactly the kind of mapping someone replacing a voice line
-        needs to know about up front, not discover by trial and error.
-      - The .bnk soundbank path and numeric EventId/MediaId, since
-        those are the actual on-disk identifiers, not just a display
-        name.
+    UNLIKE every category built before it, Areas has NO data-table
+    list file at all -- confirmed by direct search before this was
+    written (no DT_AreaList/DT_AreaDatabase exists anywhere in the
+    export; DT_InitPopAreaTable_WL01/WL02 exist but both have ZERO
+    rows). The authoritative area registry is the official
+    localization itself: the 176 AreaTitle_* keys in Game.json's
+    ST_GeneralLocalizeList, confirmed IDENTICAL across all 13
+    languages before being treated as canonical (checked key-set
+    equality per language, not assumed from en alone).
+
+    Three additional keys are referenced by BP_AreaTitle_Gimmick_Spawner
+    actors in level files but exist in NO language's table
+    (AreaTitle_LA01Lower_SA_02 / AreaTitle_QiyuHallOfGuardianship_SA_02
+    / AreaTitle_RuinStrategyTemple_SA_02 -- all *_SA_02 duplicates of a
+    named area, likely internal variants for a second safe-area gate in
+    the same area). Following the Items section's "Hand Mirror"
+    precedent, these are shown flagged (isUnofficialKey) rather than
+    silently dropped -- referenced-by-data is still real.
+
+    Cross-references gathered per area, each from a confirmed source:
+      - dungeonKey/dungeonCode: parsed from the area's own EN title
+        template ("{Rep_DungeonName_X}: ..." -- 82 of 176 use one),
+        the same {Rep_} convention Recipes/Lore/Towns/Quests already
+        resolve. An area with no template has NO dungeon link in the
+        data -- recorded as null, not guessed to be "overworld."
+      - terminals: from DA_InGame.json's WorldDatas (the per-floor
+        teleport terminal registry -- 192 entries across floor indexes
+        Dungeon/First/Second). Two link kinds, kept distinct:
+        "destination" (the terminal's own Key IS this area's key --
+        teleporting there puts you in this area) and "nameRef" (the
+        terminal's TerminalName_* display string embeds
+        {Rep_<thisAreaKey>} -- the gate is named after the area).
+        Terminal world coordinates are copied through when non-zero
+        (122 of 192 have real coordinates; the rest are genuinely
+        0,0,0 in the source and passed through as null instead of a
+        fake origin point).
+      - spawnerLevels: which level files (Maps/ + DNG/, LV_*.json)
+        contain a BP_AreaTitle_Gimmick_Spawner actor with
+        AreaName == this key -- the literal level/instance loading
+        identifier family Towns/Quests already surface. This scan is a
+        SOFT dependency: Maps/ and DNG/ ship in separate Content-*.zip
+        archives from the core Content.zip, so their absence must not
+        fail the build -- the index records levelScanAvailable so the
+        app can say "not scanned" instead of implying "none exist."
+      - questRefs: which quests' QST_/DA_QuestAsset_ files mention the
+        key (start/goal gates and floor transitions reference areas).
+
+    No thumbnail/texture exists for any area anywhere in the export
+    (confirmed by direct search -- the in-game area title is a spawned
+    banner widget, not a stored image), so unlike Lore there is no
+    image handling here at all, matching Monsters' reasoning.
     """
-    events_root = os.path.join(SRC, "WwiseAudio", "Events")
-    if not os.path.exists(events_root):
-        print("  No WwiseAudio/Events found -- skipping.")
-        return {}
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    official_keys = sorted(k for k in english_general if k.startswith("AreaTitle_"))
 
-    events = []
-    category_counts = {}
+    # --- Terminal registry from DA_InGame (hard requirement) ---
+    da_ingame_path = os.path.join(SRC, "DataAssets/Games/InGame/DA_InGame.json")
+    da_props = load_json(da_ingame_path)[0]["Properties"]
+    terminal_links = {}  # areaKey -> [ {id, floor, kind, coordinate} ]
 
-    for root, dirs, files in os.walk(events_root):
-        for fname in sorted(files):
-            if not fname.endswith(".json"):
-                continue
-            full_path = os.path.join(root, fname)
-            rel_path = os.path.relpath(full_path, events_root).replace(os.sep, "/")
-            category = rel_path.split("/")[0]
+    def _add_terminal(area_key, tid, floor, kind, coord):
+        entry = {"id": tid, "floor": floor, "linkKind": kind}
+        if coord and any(coord.get(a) for a in ("X", "Y", "Z")):
+            entry["coordinate"] = {a: coord[a] for a in ("X", "Y", "Z")}
+        else:
+            entry["coordinate"] = None
+        terminal_links.setdefault(area_key, []).append(entry)
 
+    total_terminals = 0
+    for world in da_props.get("WorldDatas", []):
+        floor = strip_enum(world.get("FloorIndex", "")).replace("ERODFloorIndex::", "")
+        for t in world.get("TerminalDatas", []):
+            total_terminals += 1
+            tid, key, coord = t.get("ID"), t.get("Key"), t.get("Coordinate")
+            if key and key.startswith("AreaTitle_"):
+                _add_terminal(key, tid, floor, "destination", coord)
+            elif key and key.startswith("TerminalName_"):
+                # The gate's display string may embed {Rep_AreaTitle_X}
+                raw = english_general.get(key, "")
+                for m in re.finditer(r"\{Rep_(AreaTitle_\w+?)\}", raw):
+                    _add_terminal(m.group(1), tid, floor, "nameRef", coord)
+
+    # --- Spawner level scan (soft dependency -- Maps/DNG are separate uploads) ---
+    spawner_levels = {}  # areaKey -> [relative level paths]
+    unofficial_spawner_keys = set()
+    scan_roots = [r for r in ("Maps", "DNG") if os.path.isdir(os.path.join(SRC, r))]
+    level_scan_available = len(scan_roots) > 0
+    spawner_pat = re.compile(r'"AreaName":\s*"(AreaTitle_\w+)"')
+    files_scanned = 0
+    for root_name in scan_roots:
+        for dirpath, _dirs, files in os.walk(os.path.join(SRC, root_name)):
+            for fn in files:
+                if not (fn.startswith("LV_") and fn.endswith(".json")):
+                    continue
+                full = os.path.join(dirpath, fn)
+                files_scanned += 1
+                try:
+                    with open(full, "r", encoding="utf-8", errors="ignore") as f:
+                        text = f.read()
+                except OSError:
+                    continue
+                if "AreaName" not in text:
+                    continue
+                rel = os.path.relpath(full, SRC).replace(os.sep, "/")
+                for m in spawner_pat.finditer(text):
+                    key = m.group(1)
+                    if rel not in spawner_levels.setdefault(key, []):
+                        spawner_levels[key].append(rel)
+                    if key not in english_general:
+                        unofficial_spawner_keys.add(key)
+
+    # --- Quest references ---
+    quest_refs = {}  # areaKey -> [questId]
+    for pattern in ("DataAssets/Quests/Main/QST_Main_*.json",
+                    "DataAssets/QuestAssets/Main/DA_QuestAsset_Main_*.json"):
+        for path in sorted(glob.glob(os.path.join(SRC, pattern))):
+            quest_id = re.search(r"(Main_\d+)", os.path.basename(path)).group(1)
             try:
-                data = load_json(full_path)
-            except Exception as e:
-                continue  # a small number of malformed exports shouldn't halt the whole build
-
-            if not (isinstance(data, list) and data and isinstance(data[0], dict)):
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+            except OSError:
                 continue
-            entry = data[0]
-            event_name = entry.get("Name", fname.replace(".json", ""))
-            cooked = entry.get("EventCookedData", {})
-            lang_map = cooked.get("EventLanguageMap", [])
+            for key in set(re.findall(r"AreaTitle_\w+", text)):
+                refs = quest_refs.setdefault(key, [])
+                if quest_id not in refs:
+                    refs.append(quest_id)
 
-            languages = []
-            event_id = None
-            soundbank_path = None
-            for lm in lang_map:
-                lang_name = (lm.get("Key") or {}).get("LanguageName")
-                value = lm.get("Value") or {}
-                if event_id is None:
-                    event_id = value.get("EventId")
-                soundbanks = value.get("SoundBanks") or []
-                if soundbank_path is None and soundbanks:
-                    soundbank_path = soundbanks[0].get("SoundBankPathName")
-                media_paths = [m.get("MediaPathName") for m in (value.get("Media") or []) if m.get("MediaPathName")]
-                languages.append({
-                    "language": lang_name,
-                    "mediaPaths": media_paths,
-                })
+    # --- Assemble entries: official keys first, then flagged extras ---
+    all_keys = list(official_keys)
+    for key in sorted(unofficial_spawner_keys):
+        if key not in all_keys:
+            all_keys.append(key)
 
-            events.append({
-                "path": rel_path,
-                "category": category,
-                "name": event_name,
-                "eventId": event_id,
-                "soundBankPath": soundbank_path,
-                "languages": languages,
-                "mediaFileCount": sum(len(l["mediaPaths"]) for l in languages),
-                "isMultiLanguage": len(languages) > 1,
-            })
-            category_counts[category] = category_counts.get(category, 0) + 1
+    dungeon_tmpl = re.compile(r"\{Rep_(DungeonName_(\w+?))\}")
+    areas = []
+    dungeon_linked = 0
+    for key in all_keys:
+        is_official = key in english_general
+        raw_en = english_general.get(key, "")
+        m = dungeon_tmpl.search(raw_en)
+        dungeon_key = m.group(1) if m else None
+        dungeon_code = m.group(2) if m else None
+        if dungeon_key:
+            dungeon_linked += 1
+        terminals = sorted(terminal_links.get(key, []), key=lambda t: (t["floor"], t["id"]))
+        areas.append({
+            "areaKey": key,
+            "areaId": key.replace("AreaTitle_", "", 1),
+            "isUnofficialKey": not is_official,
+            "dungeonKey": dungeon_key,
+            "dungeonCode": dungeon_code,
+            "terminals": terminals,
+            "spawnerLevels": sorted(spawner_levels.get(key, [])),
+            "questRefs": sorted(quest_refs.get(key, [])),
+        })
 
-    events.sort(key=lambda e: e["path"])
-    save_json(os.path.join(OUT, "DataAssets/_WwiseAudio/_index.json"), {
-        "totalCount": len(events),
-        "categoryCounts": category_counts,
+    # Sort alphabetically by key -- areas have no numeric ID and no
+    # confirmed in-game ordering anywhere in the export (there is no
+    # list file to take an order FROM), so a stable alphabetical
+    # default keeps the list scannable; search covers the rest.
+    areas.sort(key=lambda a: a["areaKey"].lower())
+
+    save_json(os.path.join(OUT, "DataAssets/Database/Areas/Areas.json"), areas)
+    save_json(os.path.join(OUT, "DataAssets/Database/Areas/_index.json"), {
+        "count": len(areas),
+        "officialCount": len(official_keys),
+        "unofficialKeys": sorted(unofficial_spawner_keys),
+        "dungeonLinkedCount": dungeon_linked,
+        "terminalTotal": total_terminals,
+        "areasWithTerminals": sum(1 for a in areas if a["terminals"]),
+        "levelScanAvailable": level_scan_available,
+        "levelScanRoots": scan_roots,
+        "levelFilesScanned": files_scanned,
+        "areasWithSpawners": sum(1 for a in areas if a["spawnerLevels"]),
+        "file": "DataAssets/Database/Areas/Areas.json",
     })
-    save_json(os.path.join(OUT, "DataAssets/_WwiseAudio/events.json"), events)
+    print(f"  Areas: {len(areas)} total ({len(official_keys)} official keys + "
+          f"{len(unofficial_spawner_keys)} referenced-but-unnamed), "
+          f"{dungeon_linked} dungeon-linked, "
+          f"{sum(1 for a in areas if a['terminals'])} with terminal links")
+    if level_scan_available:
+        print(f"    Level scan: {files_scanned} LV_*.json files across {scan_roots}, "
+              f"{sum(1 for a in areas if a['spawnerLevels'])} areas with title-spawner placements")
+    else:
+        print("    Level scan: Maps/ and DNG/ not present in raw-export -- spawner links skipped (soft dependency)")
 
-    print(f"  Wwise audio: {len(events)} events across {len(category_counts)} categories")
-    for cat, count in sorted(category_counts.items(), key=lambda x: -x[1])[:5]:
-        print(f"    {cat}: {count}")
+    return {a["areaKey"]: a for a in areas}
 
-    return events
+
+def build_area_localization(all_areas):
+    """
+    Per-language name for each area, keyed by areaKey (the AreaTitle_*
+    localization key itself) against ST_GeneralLocalizeList, with the
+    same {Rep_X} template rule as Lore/Towns/Quests -- 82 of the 176
+    official area titles are templates embedding a DungeonName_* (e.g.
+    "{Rep_DungeonName_HTE_Anc}: Spirit Gate" -> "Ancient Ritual Hall:
+    Spirit Gate"), resolved per-language against that language's own
+    table with English fallback.
+
+    For dungeon-linked areas, the linked dungeon's own display name is
+    ALSO resolved and stored per-language (dungeonName) so the app can
+    show "Linked dungeon: Ancient Ritual Hall" localized without a
+    second lookup table -- the same convention build_quest_localization
+    already uses for its dungeonName field.
+
+    The 3 unofficial *_SA_02 keys (see build_areas) resolve in NO
+    language by definition -- they get an empty, unverified entry so
+    every language file still has one row per area (totalCount stays
+    consistent with the Areas list itself).
+    """
+    loc_dir = os.path.join(OUT, "DataAssets/Database/Areas/Localization")
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    manifest = {}
+
+    for lang_code, lang_label in SUPPORTED_LANGUAGES.items():
+        loc_path = os.path.join(loc_dir, f"{lang_code}.json")
+        existing = load_json(loc_path) if os.path.exists(loc_path) else {}
+        general_strings = load_official_strings(lang_code)
+        entries = dict(existing)
+
+        for area_key, area in all_areas.items():
+            if area_key in entries:
+                continue
+
+            name, name_verified, name_source = "", False, None
+            raw = general_strings.get(area_key) or english_general.get(area_key)
+            if raw:
+                name = _resolve_rep_templates(raw, general_strings, english_general)
+                name_verified = True
+                name_source = "Official game localization (Game.json)"
+                if area_key not in general_strings and area_key in english_general:
+                    name_source = f"Fallback to English (no {lang_code} translation found)"
+
+            dungeon_name, dungeon_verified = "", False
+            dungeon_key = area.get("dungeonKey")
+            if dungeon_key:
+                raw_d = general_strings.get(dungeon_key) or english_general.get(dungeon_key)
+                if raw_d:
+                    dungeon_name = _resolve_rep_templates(raw_d, general_strings, english_general)
+                    dungeon_verified = True
+
+            entries[area_key] = {
+                "name": name,
+                "verified": name_verified,
+                "source": name_source,
+                "dungeonName": dungeon_name,
+                "dungeonNameVerified": dungeon_verified,
+            }
+
+        save_json(loc_path, entries)
+        verified = sum(1 for v in entries.values() if v["verified"])
+        manifest[lang_code] = {
+            "label": lang_label,
+            "file": f"DataAssets/Database/Areas/Localization/{lang_code}.json",
+            "verifiedCount": verified,
+            "totalCount": len(entries),
+        }
+
+    manifest["_defaultLanguage"] = DEFAULT_LANGUAGE
+    manifest["_gameLaunchDate"] = GAME_LAUNCH_DATE
+    save_json(os.path.join(loc_dir, "_manifest.json"), manifest)
+    print(f"  Area localization: {len(all_areas)} areas x {len(SUPPORTED_LANGUAGES)} languages")
+
+
+# The 17 official dungeon codes -- the DungeonName_* key set, confirmed
+# IDENTICAL across all 13 languages before being treated as canonical
+# (same verification build_areas did for AreaTitle_*). Shared between
+# build_dungeons and build_gates so both attribute by the SAME list.
+DUNGEON_CODES = [
+    "ERU_Boeroe", "ERU_Kati", "ERU_Nebeka", "ERU_OKU", "ERU_Qiyu",
+    "HFO_DEF", "HFO_Ruin",
+    "HTE_Anc", "HTE_FI", "HTE_Und",
+    "MGK_LA01", "MGK_Seal", "MGK_Test",
+    "NTR_Blue", "NTR_Demi", "NTR_Lime", "NTR_TWI",
+]
+
+# Gate/terminal IDs on the Dungeon floor follow
+#   {WT|SA}_{DungeonCode}_F{n}{s|e}[_{numericVariant}]
+# (s = the floor's start gate, e = its end gate; the numeric suffix
+# variants -- e.g. SA_NTR_Blue_F1e_20027 -- are additional instanced
+# end-gates, confirmed by the base form existing alongside them).
+# 69 of the 192 registered gates match this with a real dungeon code;
+# exactly ONE dungeon-floor gate doesn't match at all
+# (SA_ERU_WAY_BOEROE_01) and is left honestly unattributed rather than
+# force-fitted.
+_GATE_DUNGEON_PATTERN = re.compile(r"^(WT|SA)_(.+?)_F(\d+)([se])(?:_(\d+))?$")
+
+
+def _match_dungeon_code(key):
+    """Longest-prefix match of a generation-config key (theme/way/room)
+    against the official dungeon codes; None when nothing matches --
+    near-misses like NTR_Twilight_* vs NTR_TWI are deliberately NOT
+    aliased (plausible but unconfirmed), they stay unassigned."""
+    up = key.upper()
+    for code in sorted(DUNGEON_CODES, key=len, reverse=True):
+        cu = code.upper()
+        if up == cu or up.startswith(cu + "_"):
+            return code
+    return None
+
+
+def build_dungeons(all_areas):
+    """
+    Builds Content/ROD/DataAssets/Database/Dungeons/Dungeons.json --
+    the World > Dungeons section: the 17 officially named dungeons
+    (DungeonName_* keys, identical set in all 13 languages, verified)
+    across 5 families matching the DNG/ folder codes
+    (ERU/HFO/HTE/MGK/NTR).
+
+    Like Areas, there is NO dungeon data-table list file anywhere in
+    the export (confirmed by search) -- the localization key set is
+    the registry. What the data DOES have, and what this section
+    surfaces per dungeon:
+
+      - gates: the dungeon's per-floor gate chain from DA_InGame's
+        WorldDatas, parsed via _GATE_DUNGEON_PATTERN (floor number +
+        start/end kind + instanced variant suffix). 13 of 17 dungeons
+        have at least one registered gate; ERU_OKU / HFO_Ruin /
+        HTE_FI / MGK_Test genuinely have none in the registry.
+      - linkedAreaKeys: areas whose own official title embeds this
+        dungeon's name key (the {Rep_DungeonName_*} template link the
+        Areas section already resolves) -- comes straight from
+        all_areas, the same data the app shows, so the two sections
+        can never disagree.
+      - questRefs: quests whose files mention the dungeon's name key.
+      - generation: this dungeon's slice of DA_InGame's procedural
+        dungeon-generation config -- DungeonThemes / Ways / Rooms
+        keys prefix-matched to the dungeon code (38/56, 47/71, 31/43
+        match a named dungeon; the rest -- debug/test/default/common
+        entries like HSD_Test*, DBG_Debug, HFO_COMMON_* -- go into the
+        index's unassigned bucket, shown honestly rather than
+        force-attributed), plus SafeDungeonSeeds sets (36/36 of those
+        match a named dungeon) with per-set seed counts.
+      - moduleLevels: DNG/ level files attributed to this dungeon by
+        exact path-token match of the dungeon's sub-code within its
+        family folder (e.g. DNG/ERU/WAY/NEBEKA/... -> ERU_Nebeka,
+        LV_DNG_HTE_UND_* -> HTE_Und). Token-exact matching, NOT
+        substring (so "FI" only matches the literal path component/
+        name token FI, never "Field"). Files in a family folder with
+        no sub-code token stay family-shared (counted in the index,
+        not misattributed). DNG/ is a SOFT dependency, same treatment
+        as build_areas' level scan: it ships in Content-DNG.zip, so
+        its absence must not fail the build -- the index records
+        dngScanAvailable so the app can say "not scanned" instead of
+        implying "none exist."
+
+    No image exists for any dungeon (searched -- same situation as
+    Areas/Monsters), so no thumbnail handling.
+    """
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    da_props = load_json(os.path.join(SRC, "DataAssets/Games/InGame/DA_InGame.json"))[0]["Properties"]
+
+    # --- Gate chains from the terminal registry ---
+    gates_by_code = {}
+    unmatched_dungeon_floor_gates = []
+    for world in da_props.get("WorldDatas", []):
+        floor = strip_enum(world.get("FloorIndex", "")).replace("ERODFloorIndex::", "")
+        for t in world.get("TerminalDatas", []):
+            m = _GATE_DUNGEON_PATTERN.match(t.get("ID", ""))
+            code = m.group(2) if m and m.group(2) in DUNGEON_CODES else None
+            if code:
+                coord = t.get("Coordinate") or {}
+                gates_by_code.setdefault(code, []).append({
+                    "id": t["ID"],
+                    "floor": floor,
+                    "type": m.group(1),
+                    "dungeonFloorNum": int(m.group(3)),
+                    "gateKind": "start" if m.group(4) == "s" else "end",
+                    "variant": m.group(5),
+                    "coordinate": ({a: coord[a] for a in ("X", "Y", "Z")}
+                                   if any(coord.get(a) for a in ("X", "Y", "Z")) else None),
+                })
+            elif "Dungeon" in floor:
+                unmatched_dungeon_floor_gates.append(t.get("ID"))
+
+    # --- Areas linked via their own title templates (from all_areas) ---
+    areas_by_dungeon = {}
+    for area in all_areas.values():
+        if area.get("dungeonKey"):
+            areas_by_dungeon.setdefault(area["dungeonKey"], []).append(area["areaKey"])
+
+    # --- Quest references ---
+    quest_refs = {}
+    for pattern in ("DataAssets/Quests/Main/QST_Main_*.json",
+                    "DataAssets/QuestAssets/Main/DA_QuestAsset_Main_*.json"):
+        for path in sorted(glob.glob(os.path.join(SRC, pattern))):
+            quest_id = re.search(r"(Main_\d+)", os.path.basename(path)).group(1)
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            for key in set(re.findall(r"DungeonName_\w+", text)):
+                refs = quest_refs.setdefault(key, [])
+                if quest_id not in refs:
+                    refs.append(quest_id)
+
+    # --- Generation config slices ---
+    def _bucket(pairs):
+        """[(key, ...)] -> ({code: [keys]}, [unassigned keys])"""
+        hit, miss = {}, []
+        for k in pairs:
+            code = _match_dungeon_code(k)
+            if code:
+                hit.setdefault(code, []).append(k)
+            else:
+                miss.append(k)
+        return hit, miss
+
+    theme_keys = [t["Key"] for t in da_props.get("DungeonThemes", [])]
+    way_keys = [w["Key"] for w in da_props.get("Ways", [])]
+    room_keys = [r["Key"] for r in da_props.get("Rooms", [])]
+    themes_by, themes_un = _bucket(theme_keys)
+    ways_by, ways_un = _bucket(way_keys)
+    rooms_by, rooms_un = _bucket(room_keys)
+
+    seeds_by = {}
+    for s in da_props.get("SafeDungeonSeeds", []):
+        code = _match_dungeon_code(s["Param"]["ThemeKey"])
+        if code:
+            seeds_by.setdefault(code, []).append({
+                "themeKey": s["Param"]["ThemeKey"],
+                "gridSize": s["Param"].get("GridSize"),
+                "seedCount": len(s.get("Seeds", [])),
+            })
+
+    # --- DNG module-level attribution (soft dependency) ---
+    dng_root = os.path.join(SRC, "DNG")
+    dng_scan_available = os.path.isdir(dng_root)
+    modules_by_code = {}
+    family_counts = {}
+    family_shared_counts = {}
+    token_split = re.compile(r"[/_.\-]")
+    if dng_scan_available:
+        sub_by_family = {}
+        for code in DUNGEON_CODES:
+            fam, sub = code.split("_", 1)
+            sub_by_family.setdefault(fam, []).append((code, sub.upper()))
+        for dirpath, _dirs, files in os.walk(dng_root):
+            for fn in files:
+                if not (fn.startswith("LV_") and fn.endswith(".json")):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, fn), SRC).replace(os.sep, "/")
+                parts = rel.split("/")
+                family = parts[1] if len(parts) > 1 else ""
+                family_counts[family] = family_counts.get(family, 0) + 1
+                tokens = set(t.upper() for t in token_split.split(rel) if t)
+                assigned = None
+                for code, sub in sub_by_family.get(family, []):
+                    if sub in tokens:
+                        assigned = code
+                        break
+                if assigned:
+                    modules_by_code.setdefault(assigned, []).append(rel)
+                else:
+                    family_shared_counts[family] = family_shared_counts.get(family, 0) + 1
+
+    dungeons = []
+    for code in DUNGEON_CODES:
+        key = f"DungeonName_{code}"
+        family = code.split("_", 1)[0]
+        gates = sorted(gates_by_code.get(code, []),
+                       key=lambda g: (g["dungeonFloorNum"], g["gateKind"] != "start", g["id"]))
+        dungeons.append({
+            "dungeonKey": key,
+            "code": code,
+            "family": family,
+            "gates": gates,
+            "linkedAreaKeys": sorted(areas_by_dungeon.get(key, [])),
+            "questRefs": sorted(quest_refs.get(key, [])),
+            "generation": {
+                "themes": sorted(themes_by.get(code, [])),
+                "ways": sorted(ways_by.get(code, [])),
+                "rooms": sorted(rooms_by.get(code, [])),
+                "seedSets": sorted(seeds_by.get(code, []), key=lambda s: s["themeKey"]),
+            },
+            "moduleLevels": sorted(modules_by_code.get(code, [])),
+        })
+
+    dungeons.sort(key=lambda d: d["code"])
+
+    save_json(os.path.join(OUT, "DataAssets/Database/Dungeons/Dungeons.json"), dungeons)
+    save_json(os.path.join(OUT, "DataAssets/Database/Dungeons/_index.json"), {
+        "count": len(dungeons),
+        "withGates": sum(1 for d in dungeons if d["gates"]),
+        "withLinkedAreas": sum(1 for d in dungeons if d["linkedAreaKeys"]),
+        "unmatchedDungeonFloorGates": sorted(unmatched_dungeon_floor_gates),
+        "generationUnassigned": {
+            "themes": sorted(themes_un),
+            "ways": sorted(ways_un),
+            "rooms": sorted(rooms_un),
+        },
+        "generationTotals": {
+            "themes": len(theme_keys), "ways": len(way_keys), "rooms": len(room_keys),
+            "seedSets": len(da_props.get("SafeDungeonSeeds", [])),
+        },
+        "dngScanAvailable": dng_scan_available,
+        "dngFamilyLevelCounts": family_counts,
+        "dngFamilySharedCounts": family_shared_counts,
+        "file": "DataAssets/Database/Dungeons/Dungeons.json",
+    })
+    print(f"  Dungeons: {len(dungeons)} named ({sum(1 for d in dungeons if d['gates'])} with gate chains, "
+          f"{sum(1 for d in dungeons if d['linkedAreaKeys'])} with linked areas)")
+    if dng_scan_available:
+        attributed = sum(len(d["moduleLevels"]) for d in dungeons)
+        print(f"    DNG scan: {sum(family_counts.values())} level files, {attributed} attributed to a named dungeon, "
+              f"{sum(family_shared_counts.values())} family-shared")
+    else:
+        print("    DNG scan: DNG/ not present in raw-export -- module levels skipped (soft dependency)")
+
+    return {d["dungeonKey"]: d for d in dungeons}
+
+
+def build_dungeon_localization(all_dungeons):
+    """
+    Per-language name for each dungeon, keyed by dungeonKey
+    (DungeonName_*) against ST_GeneralLocalizeList -- same manifest
+    shape and {Rep_} rule as every localization builder before it
+    (dungeon names themselves contain no templates in the current
+    snapshot, but the resolver is applied anyway for consistency and
+    future exports).
+    """
+    loc_dir = os.path.join(OUT, "DataAssets/Database/Dungeons/Localization")
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    manifest = {}
+
+    for lang_code, lang_label in SUPPORTED_LANGUAGES.items():
+        loc_path = os.path.join(loc_dir, f"{lang_code}.json")
+        existing = load_json(loc_path) if os.path.exists(loc_path) else {}
+        general_strings = load_official_strings(lang_code)
+        entries = dict(existing)
+
+        for dungeon_key in all_dungeons:
+            if dungeon_key in entries:
+                continue
+            name, verified, source = "", False, None
+            raw = general_strings.get(dungeon_key) or english_general.get(dungeon_key)
+            if raw:
+                name = _resolve_rep_templates(raw, general_strings, english_general)
+                verified = True
+                source = "Official game localization (Game.json)"
+                if dungeon_key not in general_strings and dungeon_key in english_general:
+                    source = f"Fallback to English (no {lang_code} translation found)"
+            entries[dungeon_key] = {"name": name, "verified": verified, "source": source}
+
+        save_json(loc_path, entries)
+        manifest[lang_code] = {
+            "label": lang_label,
+            "file": f"DataAssets/Database/Dungeons/Localization/{lang_code}.json",
+            "verifiedCount": sum(1 for v in entries.values() if v["verified"]),
+            "totalCount": len(entries),
+        }
+
+    manifest["_defaultLanguage"] = DEFAULT_LANGUAGE
+    manifest["_gameLaunchDate"] = GAME_LAUNCH_DATE
+    save_json(os.path.join(loc_dir, "_manifest.json"), manifest)
+    print(f"  Dungeon localization: {len(all_dungeons)} dungeons x {len(SUPPORTED_LANGUAGES)} languages")
+
+
+def build_gates():
+    """
+    Builds Content/ROD/DataAssets/Database/Gates/Gates.json -- the
+    World > Gates section: the full flattened teleport-gate registry
+    from DA_InGame.json's WorldDatas (192 gates across floor indexes
+    Dungeon/First/Second), one row per gate.
+
+    Per gate:
+      - id / floor / type (SA_* Safe Area terminal vs WT_* Warp
+        Terminal -- two confirmed separate art families under
+        ENV/Theme/Elven/)
+      - nameKey: the gate's localization key. Two kinds exist in the
+        registry and are kept as-is: TerminalName_* (123 gates, the
+        gate's own display string) and AreaTitle_* (69 gates -- the
+        gate's Key IS an area key, i.e. its teleport destination).
+        destinationAreaKey is set for the latter so the app can link
+        straight into World > Areas.
+      - coordinate: real world position when non-zero in the source
+        (122 of 192); null otherwise, never a fake origin.
+      - dungeon attribution via _GATE_DUNGEON_PATTERN (code + floor
+        number + start/end + instanced variant) -- 69 gates match a
+        named dungeon; SA_ERU_WAY_BOEROE_01 is the one dungeon-floor
+        gate that matches nothing and is left unattributed.
+      - nameRefAreaKeys: AreaTitle_* keys embedded in the gate's own
+        EN display-string template ({Rep_AreaTitle_X}) -- the honest
+        gate<->town/area name link. NOTE: towns' own terminalID field
+        is a DIFFERENT ID namespace (TG_001-style, from
+        DT_TownList.json) than this registry's WT_*/SA_* IDs -- an
+        earlier working assumption that WT_TOB literally matched the
+        Towns tab's terminal IDs was checked and found WRONG before
+        shipping; the real tie is that WT_TOB's display template
+        embeds the town's AreaTitle key. The Gates view joins on THAT,
+        client-side, against the same loaded Towns data.
+      - mapPieces: whether DA_MapPiece_PL_WL01/02_WP.json carries
+        map-reveal piece data keyed by this gate's ID (world + piece
+        count). 124 gate IDs have pieces (72 WL01 + 52 WL02). The
+        MapPiece files ship in the core Content.zip's DataAssets, but
+        are still loaded defensively (their absence downgrades the
+        cross-reference, not the build).
+
+    Town linkage is deliberately a CLIENT-SIDE join in the Gates view
+    (town.nameKey against this builder's nameRefAreaKeys) against the
+    already-loaded Towns data, not duplicated here -- same
+    can-never-disagree reasoning build_dungeons uses for areas.
+
+    "Golden Gates" are NOT a field here on purpose: the term exists in
+    exactly two official item strings (Usable_74) and nothing in any
+    file identifies which gates -- if any currently shipped -- are
+    golden. The leading hypothesis (the crystal-activated SA_* gates)
+    is recorded in Data Coverage as an OPEN question, not encoded as
+    data.
+    """
+    da_props = load_json(os.path.join(SRC, "DataAssets/Games/InGame/DA_InGame.json"))[0]["Properties"]
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+
+    # Map-piece cross-reference (defensive load)
+    map_pieces = {}  # gate ID -> {"world": "WL01", "pieceCount": n}
+    for world_name in ("WL01", "WL02"):
+        mp_path = os.path.join(SRC, f"DataAssets/WorldAdmin/MapPiece/DA_MapPiece_PL_{world_name}_WP.json")
+        if not os.path.exists(mp_path):
+            continue
+        for row in load_json(mp_path)[0]["Properties"].get("MapPieceData", []):
+            map_pieces[row["Key"]] = {
+                "world": world_name,
+                "pieceCount": len(row.get("Value", {}).get("MapPieceDataDetails", [])),
+            }
+
+    gates = []
+    for world in da_props.get("WorldDatas", []):
+        floor = strip_enum(world.get("FloorIndex", "")).replace("ERODFloorIndex::", "")
+        for t in world.get("TerminalDatas", []):
+            gid, key = t.get("ID"), t.get("Key")
+            coord = t.get("Coordinate") or {}
+            m = _GATE_DUNGEON_PATTERN.match(gid or "")
+            code = m.group(2) if m and m.group(2) in DUNGEON_CODES else None
+            name_ref_area_keys = []
+            if key and key.startswith("TerminalName_"):
+                raw = english_general.get(key, "")
+                name_ref_area_keys = sorted(set(
+                    mm.group(1) for mm in re.finditer(r"\{Rep_(AreaTitle_\w+?)\}", raw)
+                ))
+            gates.append({
+                "id": gid,
+                "floor": floor,
+                "type": "SA" if gid.startswith("SA_") else ("WT" if gid.startswith("WT_") else "other"),
+                "nameKey": key,
+                "destinationAreaKey": key if key and key.startswith("AreaTitle_") else None,
+                "nameRefAreaKeys": name_ref_area_keys,
+                "coordinate": ({a: coord[a] for a in ("X", "Y", "Z")}
+                               if any(coord.get(a) for a in ("X", "Y", "Z")) else None),
+                "dungeonCode": code,
+                "dungeonKey": f"DungeonName_{code}" if code else None,
+                "dungeonFloorNum": int(m.group(3)) if code else None,
+                "gateKind": ("start" if m.group(4) == "s" else "end") if code else None,
+                "gateVariant": m.group(5) if code else None,
+                "mapPieces": map_pieces.get(gid),
+            })
+
+    # Stable sort: floor order as registered (Dungeon/First/Second),
+    # then ID -- the registry itself is the only ordering source.
+    floor_order = {"Dungeon": 0, "First": 1, "Second": 2}
+    gates.sort(key=lambda g: (floor_order.get(g["floor"], 99), g["id"]))
+
+    save_json(os.path.join(OUT, "DataAssets/Database/Gates/Gates.json"), gates)
+    save_json(os.path.join(OUT, "DataAssets/Database/Gates/_index.json"), {
+        "count": len(gates),
+        "byFloor": {f: sum(1 for g in gates if g["floor"] == f) for f in sorted(set(g["floor"] for g in gates))},
+        "byType": {ty: sum(1 for g in gates if g["type"] == ty) for ty in sorted(set(g["type"] for g in gates))},
+        "withCoordinates": sum(1 for g in gates if g["coordinate"]),
+        "withMapPieces": sum(1 for g in gates if g["mapPieces"]),
+        "dungeonAttributed": sum(1 for g in gates if g["dungeonCode"]),
+        "destinationAreaLinked": sum(1 for g in gates if g["destinationAreaKey"]),
+        "file": "DataAssets/Database/Gates/Gates.json",
+    })
+    print(f"  Gates: {len(gates)} total "
+          f"({sum(1 for g in gates if g['type'] == 'SA')} SA / {sum(1 for g in gates if g['type'] == 'WT')} WT), "
+          f"{sum(1 for g in gates if g['coordinate'])} with coordinates, "
+          f"{sum(1 for g in gates if g['mapPieces'])} with map pieces, "
+          f"{sum(1 for g in gates if g['dungeonCode'])} dungeon-attributed")
+
+    return {g["id"]: g for g in gates}
+
+
+def build_gate_localization(all_gates):
+    """
+    Per-language display name for each gate, keyed by the gate's
+    nameKey (NOT its ID -- multiple gates can share one key, e.g. two
+    gates both keyed AreaTitle_BlueDropCaveLowermost, so keying by the
+    localization key dedupes naturally and the view resolves
+    gate.nameKey -> entry). Both key kinds (TerminalName_* and
+    AreaTitle_*) live in ST_GeneralLocalizeList; 168 of the values are
+    {Rep_} templates and resolve with the shared rule.
+
+    One known gap, recorded rather than papered over:
+    TerminalName_WT_Mountaintop exists in NO language's table -- the
+    single unresolved gate name among all 192 registered gates.
+    """
+    loc_dir = os.path.join(OUT, "DataAssets/Database/Gates/Localization")
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    manifest = {}
+    name_keys = sorted(set(g["nameKey"] for g in all_gates.values() if g.get("nameKey")))
+
+    for lang_code, lang_label in SUPPORTED_LANGUAGES.items():
+        loc_path = os.path.join(loc_dir, f"{lang_code}.json")
+        existing = load_json(loc_path) if os.path.exists(loc_path) else {}
+        general_strings = load_official_strings(lang_code)
+        entries = dict(existing)
+
+        for key in name_keys:
+            if key in entries:
+                continue
+            name, verified, source = "", False, None
+            raw = general_strings.get(key) or english_general.get(key)
+            if raw:
+                name = _resolve_rep_templates(raw, general_strings, english_general)
+                verified = True
+                source = "Official game localization (Game.json)"
+                if key not in general_strings and key in english_general:
+                    source = f"Fallback to English (no {lang_code} translation found)"
+            entries[key] = {"name": name, "verified": verified, "source": source}
+
+        save_json(loc_path, entries)
+        manifest[lang_code] = {
+            "label": lang_label,
+            "file": f"DataAssets/Database/Gates/Localization/{lang_code}.json",
+            "verifiedCount": sum(1 for v in entries.values() if v["verified"]),
+            "totalCount": len(entries),
+        }
+
+    manifest["_defaultLanguage"] = DEFAULT_LANGUAGE
+    manifest["_gameLaunchDate"] = GAME_LAUNCH_DATE
+    save_json(os.path.join(loc_dir, "_manifest.json"), manifest)
+    print(f"  Gate localization: {len(name_keys)} distinct name keys x {len(SUPPORTED_LANGUAGES)} languages")
+
+
+# Enemy Blueprint class names follow E{6 digits} (e.g. BP_E012011_C),
+# and the Monster database's titleKey is EnemyName_{same 6 digits} --
+# a CONFIRMED code-level link (not name inference). Reward-table keys
+# reuse the same codes, sometimes with a _NN variant suffix.
+_ENEMY_CODE_PATTERN = re.compile(r"^(E\d{6})(?:_\d+)?$")
+
+
+def build_monster_spawns():
+    """
+    Builds Content/ROD/DataAssets/Database/MonsterSpawns/ -- the
+    Monsters > Spawns section, from the three populated per-world
+    spawn tables under DataAssets/WorldAdmin/WL01|WL02/ (NOT
+    DT_InitPopAreaTable_*, which was confirmed to have ZERO rows in
+    both worlds back when Areas was scoped):
+
+      - DT_CharacterGroupTable_*   spawn COMPOSITIONS: group key ->
+        list of characters (Blueprint class + Level + PopNum)
+      - DT_CharacterGroupLotTable_* weighted LOTTERIES over group keys
+      - DT_SocketPopTable_*         POP CONFIGS: wave count/delay
+        ranges + which group-lots each socket rolls
+
+    The chain is Pop -> Lot(s) -> weighted Group(s) -> characters.
+    This builder flattens all three per world and adds REVERSE
+    indexes (which lots reference a group; which pops reference a
+    lot) so the app can walk the chain from any anchor.
+
+    Character entries resolve their Blueprint class (BP_E012011_C ->
+    enemy code E012011 -> EnemyName_012011) to the Monster database
+    where the code matches -- a confirmed code link, not name
+    matching. Classes with no E-code (BP_Rabbit_C and other named
+    animals) or codes absent from the database are passed through
+    with enemyNameKey=null, shown as-is.
+
+    HONEST LIMITS, recorded here and in Data Coverage:
+      - Level/PopNum are -1 ("inherit/default") in 2,941 of 2,950
+        character slots in THESE spawn tables specifically -- that is
+        genuinely what DT_CharacterGroupTable says, and this section
+        keeps showing -1 as inherit rather than silently substituting
+        a different table's number. The actual per-enemy default level
+        (and HP/Attack/Defence curves) is NOT absent from the export
+        anymore: it arrived in a later Blueprints/ asset drop and is
+        now its own section, Monsters > Stats (build_monster_stats),
+        joined by the same E{code} link used here. This section's -1
+        display is intentionally unchanged by that -- Spawns reports
+        what the spawn table says, Stats reports what the enemy's own
+        Blueprint default says, and the two are allowed to differ.
+        The two genuine level-related curves living directly in THIS
+        export's scope (CoefFixedLevelExperiencePointCurve,
+        EnemyLevelCoefDamageCurve) are still exported into the index
+        for this view's own overview panel.
+      - Spawn PLACEMENT geometry is mostly absent from the exported
+        level JSONs too (only 4 RODInitPopAreaVolume + 36
+        RODSpawnPointsComponent actors across all of Maps/) -- this
+        section is the spawn LOGIC, deliberately not a spawn MAP.
+    """
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+
+    def _curve_points(path):
+        if not os.path.exists(path):
+            return None
+        s = json.dumps(load_json(path))
+        return [{"time": float(t), "value": float(v)}
+                for t, v in re.findall(r'"Time":\s*([\d.eE+-]+),\s*"Value":\s*([\d.eE+-]+)', s)]
+
+    groups, lots, pops = [], [], []
+    lots_by_group = {}   # groupKey -> [lotKey]
+    pops_by_lot = {}     # lotKey -> [popKey]
+    level_default_slots, level_set_slots = 0, 0
+
+    for world in ("WL01", "WL02"):
+        base = os.path.join(SRC, f"DataAssets/WorldAdmin/{world}")
+        if not os.path.isdir(base):
+            continue
+
+        group_rows = load_json(os.path.join(base, f"DT_CharacterGroupTable_{world}.json"))[0]["Rows"]
+        lot_rows = load_json(os.path.join(base, f"DT_CharacterGroupLotTable_{world}.json"))[0]["Rows"]
+        pop_rows = load_json(os.path.join(base, f"DT_SocketPopTable_{world}.json"))[0]["Rows"]
+
+        for key, row in group_rows.items():
+            characters = []
+            for c in row.get("Characters", []):
+                obj = (c.get("Character") or {}).get("ObjectName", "")
+                m = re.search(r"BP_(\w+)_C'", obj)
+                bp_class = m.group(1) if m else (obj or None)
+                code_m = _ENEMY_CODE_PATTERN.match(bp_class or "")
+                enemy_code = code_m.group(1) if code_m else None
+                name_key = f"EnemyName_{enemy_code[1:]}" if enemy_code else None
+                if name_key and name_key not in english_general:
+                    name_key = None  # code exists, database name doesn't -- shown as code
+                level = c.get("Level", -1)
+                if level == -1:
+                    level_default_slots += 1
+                else:
+                    level_set_slots += 1
+                characters.append({
+                    "bpClass": bp_class,
+                    "enemyCode": enemy_code,
+                    "enemyNameKey": name_key,
+                    "level": level,
+                    "popNum": c.get("PopNum", -1),
+                })
+            groups.append({
+                "groupKey": key,
+                "world": world,
+                "characters": characters,
+                "hasWeightAdjusts": bool(row.get("WeatherWeightAdjust") or row.get("HeroTensionWeightAdjust") or row.get("PartyTensionWeightAdjust")),
+            })
+
+        for key, row in lot_rows.items():
+            entries = []
+            total_w = sum((e.get("Weight") or 0) for e in row.get("CharacterGroupKeyWeights", [])) or 0
+            for e in row.get("CharacterGroupKeyWeights", []):
+                gk = e.get("CharacterGroupKey") or e.get("Key")
+                w = e.get("Weight", 0)
+                entries.append({
+                    "groupKey": gk,
+                    "weight": w,
+                    # weight-derived share, labeled as such in the view
+                    "sharePct": round(100.0 * w / total_w, 2) if total_w else None,
+                })
+                if gk:
+                    lots_by_group.setdefault(f"{world}:{gk}", []).append(key)
+            lots.append({"lotKey": key, "world": world, "entries": entries})
+
+        for key, row in pop_rows.items():
+            lot_keys = row.get("CharacterGroupLotTableKeys", []) or []
+            for lk in lot_keys:
+                pops_by_lot.setdefault(f"{world}:{lk}", []).append(key)
+            pops.append({
+                "popKey": key,
+                "world": world,
+                "waveNumRange": row.get("WaveNumRange"),
+                "waveDelayTimeRange1st": row.get("WaveDelayTimeRange1st"),
+                "waveDelayTimeRange": row.get("WaveDelayTimeRange"),
+                "lotKeys": lot_keys,
+                "summonLocatorGatherRadius": row.get("SummonLocatorGatherRadius"),
+                "waveConditionSocketPopCharNum": row.get("WaveConditionSocketPopCharNum"),
+            })
+
+    # Attach reverse references
+    for g in groups:
+        g["referencedByLots"] = sorted(set(lots_by_group.get(f"{g['world']}:{g['groupKey']}", [])))
+    for l in lots:
+        l["referencedByPops"] = sorted(set(pops_by_lot.get(f"{l['world']}:{l['lotKey']}", [])))
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/MonsterSpawns")
+    save_json(os.path.join(out_dir, "Groups.json"), groups)
+    save_json(os.path.join(out_dir, "Lots.json"), lots)
+    save_json(os.path.join(out_dir, "Pops.json"), pops)
+
+    distinct_codes = sorted(set(c["enemyCode"] for g in groups for c in g["characters"] if c["enemyCode"]))
+    named_codes = sorted(set(c["enemyCode"] for g in groups for c in g["characters"] if c["enemyNameKey"]))
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "groupCount": len(groups),
+        "lotCount": len(lots),
+        "popCount": len(pops),
+        "byWorld": {w: sum(1 for g in groups if g["world"] == w) for w in ("WL01", "WL02")},
+        "distinctEnemyCodes": len(distinct_codes),
+        "codesWithDatabaseName": len(named_codes),
+        "levelDefaultSlots": level_default_slots,
+        "levelSetSlots": level_set_slots,
+        "xpCoefCurve": _curve_points(os.path.join(SRC, "DataAssets/Parameters/Enemy/CoefFixedLevelExperiencePointCurve.json")),
+        "damageCoefCurve": _curve_points(os.path.join(SRC, "DataAssets/Parameters/Damage/EnemyLevelCoefDamageCurve.json")),
+        "files": {
+            "groups": "DataAssets/Database/MonsterSpawns/Groups.json",
+            "lots": "DataAssets/Database/MonsterSpawns/Lots.json",
+            "pops": "DataAssets/Database/MonsterSpawns/Pops.json",
+        },
+    })
+    print(f"  Monster spawns: {len(groups)} groups / {len(lots)} lots / {len(pops)} pop configs across WL01+WL02")
+    print(f"    {len(distinct_codes)} distinct enemy codes ({len(named_codes)} resolve to a Monster database name); "
+          f"Level set in only {level_set_slots} of {level_set_slots + level_default_slots} character slots (rest -1 = inherit)")
+
+    return {"groups": groups, "lots": lots, "pops": pops}
+
+
+def _load_cost_recipe_map():
+    """
+    Cost-category items are RECIPE PURCHASE TOKENS -- discovered while
+    scoping Shops: every `*Recipe*` map in ItemDataAsset defines its
+    recipe's produced token as ItemData {Category: Cost, ItemId: N},
+    and those Cost ids are globally unique across all recipe maps
+    (verified: 59 ids, 0 duplicates, and all 59 shop stock entries
+    resolve through them 1:1). Returns
+    {costId: {recipeItemKey, recipeMap, recipeKey}} so Shops, Chests,
+    and Drops all resolve Cost items to the recipe's REAL ItemKey from
+    the data rather than leaving them raw -- this retroactively
+    resolved the 393 Cost slots the Drops section originally shipped
+    as unresolvable.
+    """
+    props = load_json(os.path.join(SRC, "DataAssets/Items/ItemDataAsset.json"))[0]["Properties"]
+    cost_map = {}
+    for map_name, entries in props.items():
+        if not isinstance(entries, list) or "Recipe" not in map_name:
+            continue
+        for e in entries:
+            v = e.get("Value", {})
+            idata = v.get("ItemData", {})
+            if str(idata.get("Category", "")).endswith("_Cost") and v.get("ItemKey"):
+                cost_map[idata.get("ItemId")] = {
+                    "recipeItemKey": v["ItemKey"],
+                    "recipeMap": map_name,
+                    "recipeKey": e.get("Key"),
+                }
+    return cost_map
+
+
+def _build_resolved_item_pools(all_weapons, all_armor):
+    """
+    Loads DT_ItemLotTable and resolves every slot's display key, in
+    confidence order (shared by Monsters > Drops and Items > Chests so
+    the two sections can never resolve the same pool differently):
+      1. weapon/armor categories -> exact (category, id) lookup against
+         the SAME context Equipment is built from (the data's real
+         ItemKey, no pattern guessing);
+      2. Cost -> the recipe purchase-token map (see _load_cost_recipe_map);
+      3. everything else -> the verified ItemName_{Category}_{Id}
+         localization pattern;
+      4. still nothing (Col currency amounts, Invalid, the handful of
+         armor-recipe keys absent from the tables) -> itemKey=None,
+         shown raw by the views, never faked.
+    Returns (pools, unresolved_count).
+    """
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    cost_map = _load_cost_recipe_map()
+    equip_key_by_cat_id = {}
+    for coll in (all_weapons, all_armor):
+        for item_key, entry in coll.items():
+            equip_key_by_cat_id[(entry.get("category"), entry.get("id"))] = item_key
+
+    def _resolve_item(cat, item_id):
+        key = equip_key_by_cat_id.get((cat, item_id))
+        if key:
+            return key, "equipment data (ItemKey field)"
+        if cat == "Cost" and item_id in cost_map:
+            return cost_map[item_id]["recipeItemKey"], "recipe purchase token (ItemDataAsset recipe map)"
+        candidate = f"ItemName_{cat}_{item_id}"
+        if candidate in english_general:
+            return candidate, "ItemName_{Category}_{Id} localization pattern"
+        return None, None
+
+    item_lot_rows = load_json(os.path.join(SRC, "DataAssets/WorldAdmin/DT_ItemLotTable.json"))[0]["Rows"]
+    pools = {}
+    unresolved_slots = 0
+    for lot_key, row in item_lot_rows.items():
+        slots = []
+        total_w = sum((p.get("Weight") or 0) for p in row.get("ItemLotParams", [])) or 0
+        for p in row.get("ItemLotParams", []):
+            it = p.get("Item", {})
+            cat = strip_enum(it.get("Category", "")).replace("ItemCategory_", "")
+            item_id = it.get("ItemId")
+            item_key, key_source = _resolve_item(cat, item_id)
+            if not item_key:
+                unresolved_slots += 1
+            w = p.get("Weight", 0)
+            slots.append({
+                "category": cat,
+                "itemId": item_id,
+                "num": it.get("Num", 1),
+                "itemKey": item_key,
+                "itemKeySource": key_source,
+                "weight": w,
+                "sharePct": round(100.0 * w / total_w, 2) if total_w else None,
+            })
+        pools[lot_key] = slots
+    return pools, unresolved_slots
+
+
+def build_monster_drops(all_weapons, all_armor):
+    """
+    Builds Content/ROD/DataAssets/Database/MonsterDrops/Drops.json --
+    the Monsters > Drops section, from the two global loot tables
+    under DataAssets/WorldAdmin/:
+
+      - DT_RewardLotTable  (242 rows): reward key -> per-QuestRewardID
+        weighted picks of ItemLot keys ("which pool, if any, drops")
+      - DT_ItemLotTable   (1013 rows): pool key -> weighted item slots
+        ("which item that pool yields")
+
+    Monster attribution: reward keys reusing the enemy Blueprint code
+    (E{6 digits}, optionally with a _NN variant suffix -- e.g.
+    E001003_01/_02) are linked to the Monster database via
+    EnemyName_{code}, the same confirmed code link build_monster_spawns
+    uses. 68 of the 242 keys are E-coded; the rest (named keys like
+    Boar01/Rabbit, encounter keys like WL01Hills2_sub002Boss1, and
+    explicit *Test*/Rarelity* debug rows) are shown UNLINKED --
+    name-similarity guesses (Boar01 "looks like" Frenzy Boar) are
+    deliberately not encoded.
+
+    Item resolution per lot slot, in confidence order:
+      1. weapon/armor categories: exact (category, id) lookup against
+         the SAME all_weapons/all_armor context the Equipment section
+         is built from -- yields the item's REAL ItemKey from the
+         data (e.g. ItemName_WOS_1), no pattern guessing;
+      2. everything else: the ItemName_{Category}_{Id} localization
+         pattern, which resolves for Material/Usable/KeyItem and all
+         *Recipe categories (verified against the EN table before
+         this was written);
+      3. Cost (393 slots), Col (currency, 186 slots), and Invalid (3)
+         resolve to no display name by either route -- passed through
+         with itemKey=null and shown as their raw category+id, not
+         faked.
+
+    Percentages: every weight is also emitted as a weight-derived
+    share of its own pool's total (sharePct), labeled as derived in
+    the view -- the tables contain WEIGHTS, not printed drop rates.
+    """
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    reward_rows = load_json(os.path.join(SRC, "DataAssets/WorldAdmin/DT_RewardLotTable.json"))[0]["Rows"]
+    # Pool loading + item resolution is shared with Items > Chests (see
+    # _build_resolved_item_pools) -- extracted when Chests was built,
+    # and UPGRADED at the same time: Cost slots now resolve through the
+    # recipe purchase-token map (393 previously-unresolvable slots).
+    pools, unresolved_slots = _build_resolved_item_pools(all_weapons, all_armor)
+
+    drops = []
+    for reward_key, row in reward_rows.items():
+        code_m = _ENEMY_CODE_PATTERN.match(reward_key)
+        enemy_code = code_m.group(1) if code_m else None
+        enemy_name_key = f"EnemyName_{enemy_code[1:]}" if enemy_code else None
+        if enemy_name_key and enemy_name_key not in english_general:
+            enemy_name_key = None
+        reward_sets = []
+        used_pool_keys = set()
+        for rp in row.get("RewardParams", []):
+            entries = []
+            total_w = sum((e.get("Weight") or 0) for e in rp.get("RewardLotParams", [])) or 0
+            for e in rp.get("RewardLotParams", []):
+                lk = e.get("LotItemKey")
+                w = e.get("Weight", 0)
+                if lk and lk != "None":
+                    used_pool_keys.add(lk)
+                entries.append({
+                    "lotItemKey": None if lk == "None" else lk,
+                    "weight": w,
+                    "sharePct": round(100.0 * w / total_w, 2) if total_w else None,
+                })
+            reward_sets.append({
+                "questRewardID": rp.get("QuestRewardID"),
+                "entries": entries,
+                "hasCraftLevelParams": bool(rp.get("CraftLevelRewardLotParams")),
+            })
+        drops.append({
+            "rewardKey": reward_key,
+            "enemyCode": enemy_code,
+            "enemyNameKey": enemy_name_key,
+            "variantOf": (enemy_code if code_m and reward_key != enemy_code else None),
+            "isDebugKey": bool(re.search(r"Test|Rarelity", reward_key, re.I)),
+            "rewardSets": reward_sets,
+            "pools": {k: pools[k] for k in sorted(used_pool_keys) if k in pools},
+            "missingPoolKeys": sorted(k for k in used_pool_keys if k not in pools),
+        })
+
+    drops.sort(key=lambda d: d["rewardKey"].lower())
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/MonsterDrops")
+    save_json(os.path.join(out_dir, "Drops.json"), drops)
+    referenced_pools = set(k for d in drops for k in d["pools"])
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "rewardCount": len(drops),
+        "monsterLinked": sum(1 for d in drops if d["enemyNameKey"]),
+        "eCoded": sum(1 for d in drops if d["enemyCode"]),
+        "debugKeys": sum(1 for d in drops if d["isDebugKey"]),
+        "poolTotal": len(pools),
+        "poolsReferencedByRewards": len(referenced_pools),
+        "unresolvedItemSlots": unresolved_slots,
+        "file": "DataAssets/Database/MonsterDrops/Drops.json",
+    })
+    print(f"  Monster drops: {len(drops)} reward rows ({sum(1 for d in drops if d['enemyNameKey'])} monster-linked via enemy code, "
+          f"{sum(1 for d in drops if d['isDebugKey'])} debug), {len(pools)} item pools "
+          f"({len(referenced_pools)} referenced), {unresolved_slots} item slots with no display name (Cost/Col/Invalid)")
+
+    return drops
+
+
+def build_monster_drop_localization(all_monster_drops):
+    """
+    Per-language display name for every DISTINCT resolvable itemKey
+    that appears in drop pools -- keyed by itemKey, resolved against
+    ST_GeneralLocalizeList with the shared {Rep_} rule. Equipment
+    keys (from the ItemKey field) and ItemName_{Cat}_{Id} pattern keys
+    both live in the same table, so one resolver covers both.
+    Unresolvable slots (Cost/Col/Invalid) have itemKey=null in the
+    data and simply never appear here -- the view shows their raw
+    category+id instead of a faked name.
+    """
+    loc_dir = os.path.join(OUT, "DataAssets/Database/MonsterDrops/Localization")
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    item_keys = sorted(set(
+        s["itemKey"]
+        for d in all_monster_drops
+        for slots in d["pools"].values()
+        for s in slots
+        if s.get("itemKey")
+    ))
+    manifest = {}
+
+    for lang_code, lang_label in SUPPORTED_LANGUAGES.items():
+        loc_path = os.path.join(loc_dir, f"{lang_code}.json")
+        existing = load_json(loc_path) if os.path.exists(loc_path) else {}
+        general_strings = load_official_strings(lang_code)
+        entries = dict(existing)
+
+        for key in item_keys:
+            if key in entries:
+                continue
+            name, verified, source = "", False, None
+            raw = general_strings.get(key) or english_general.get(key)
+            if raw:
+                name = _resolve_rep_templates(raw, general_strings, english_general)
+                verified = True
+                source = "Official game localization (Game.json)"
+                if key not in general_strings and key in english_general:
+                    source = f"Fallback to English (no {lang_code} translation found)"
+            entries[key] = {"name": name, "verified": verified, "source": source}
+
+        save_json(loc_path, entries)
+        manifest[lang_code] = {
+            "label": lang_label,
+            "file": f"DataAssets/Database/MonsterDrops/Localization/{lang_code}.json",
+            "verifiedCount": sum(1 for v in entries.values() if v["verified"]),
+            "totalCount": len(entries),
+        }
+
+    manifest["_defaultLanguage"] = DEFAULT_LANGUAGE
+    manifest["_gameLaunchDate"] = GAME_LAUNCH_DATE
+    save_json(os.path.join(loc_dir, "_manifest.json"), manifest)
+    print(f"  Monster drop localization: {len(item_keys)} distinct item keys x {len(SUPPORTED_LANGUAGES)} languages")
+
+
+def build_monster_stats():
+    """
+    Builds Content/ROD/DataAssets/Database/MonsterStats/MonsterStats.json
+    -- the previously-impossible Monster Levels/HP section, unlocked
+    by the Blueprints/ export that landed after build_monster_spawns()
+    recorded "-1 = inherit, no Blueprints folder exists" as an honest
+    limit. That limit is now resolved for every enemy this export
+    contains real Blueprint data for.
+
+    Source, per enemy code (E{6 digits}, the SAME confirmed link
+    build_monster_spawns and build_monster_drops use):
+      - Blueprints/Characters/Enemies/*/BP_E{code}.json's
+        Default__BP_E{code}_C object: EnemyLevel (the "inherit"
+        default), EnemyCharacterID, EnemyType, AttackPower,
+        DefencePower, WeaponExperiencePoint, and
+        DifficultyLevelRewardLotKeys -- CONFIRMED to match real keys
+        in DT_RewardLotTable.json (checked directly: e.g. Mob_Beast_S,
+        Sphere_Mob both exist), a richer per-difficulty drops link
+        than the reward-key inference Monsters > Drops uses today.
+      - .../Datas/CT_E{code}.json, referenced by the BP's
+        ParameterTable field: a per-enemy CurveTable with rows
+        MaxHealth, MaxStability, AttackPower, DefencePower,
+        ExperiencePoint, PartyExperiencePoint, WeaponExperiencePoint,
+        Col -- each a level curve (Time = level 1..301, Value = the
+        stat at that level). 174 unique enemy codes have a BP; 5 of
+        those 174 have no CT file in the current export (listed as
+        missing, not interpolated).
+
+    This does NOT retroactively change Monster Spawns' own -1 display
+    -- that section's "inherit" is still literally what the spawn
+    table says (the actual runtime level depends on additional
+    caller-side logic this export doesn't carry either), so Spawns
+    keeps showing -1 as inherit while THIS section shows the enemy's
+    own Blueprint default level and the curve it's placed on.
+    """
+    bp_files = sorted(glob.glob(os.path.join(SRC, "Blueprints/Characters/Enemies/*/BP_E*.json")))
+    monsters = []
+    missing_curve = []
+    for bp_path in bp_files:
+        m = re.search(r"BP_(E\d{6})\.json$", bp_path)
+        if not m:
+            continue
+        code = m.group(1)
+        family_dir = os.path.dirname(bp_path)
+        family = os.path.basename(family_dir)
+        try:
+            objs = load_json(bp_path)
+        except Exception:
+            continue
+        default_obj = next((o for o in objs if o.get("Name", "").startswith("Default__")), None)
+        if not default_obj:
+            continue
+        props = default_obj.get("Properties", {})
+
+        difficulty_rewards = {}
+        for e in props.get("DifficultyLevelRewardLotKeys", []):
+            diff = strip_enum(e.get("Key", "")).replace("EDifficultyLevel_", "")
+            difficulty_rewards[diff] = (e.get("Value", {}) or {}).get("RewardLotKeys", [])
+
+        curve_path = os.path.join(family_dir, "Datas", f"CT_{code}.json")
+        curve = None
+        if os.path.exists(curve_path):
+            ct_rows = load_json(curve_path)[0].get("Rows", {})
+            curve = {}
+            for stat_name, row in ct_rows.items():
+                keys = row.get("Keys", [])
+                curve[stat_name] = [{"level": int(k["Time"]), "value": k["Value"]} for k in keys]
+        else:
+            missing_curve.append(code)
+
+        name_key = f"EnemyName_{code[1:]}"
+        monsters.append({
+            "code": code,
+            "family": family,
+            "bpPath": os.path.relpath(bp_path, SRC).replace(os.sep, "/"),
+            "enemyNameKey": name_key,  # resolution/verification happens client-side against the same Monster database Spawns/Drops use
+            "enemyCharacterId": props.get("EnemyCharacterID"),
+            "enemyType": strip_enum(props.get("EnemyType", "")).replace("EEnemyType_", ""),
+            "level": props.get("EnemyLevel"),
+            "attackPower": props.get("AttackPower"),
+            "defencePower": props.get("DefencePower"),
+            "weaponExperiencePoint": props.get("WeaponExperiencePoint"),
+            "difficultyRewards": difficulty_rewards,
+            "curve": curve,
+            "hasCurve": curve is not None,
+        })
+
+    monsters.sort(key=lambda m: m["code"])
+    out_dir = os.path.join(OUT, "DataAssets/Database/MonsterStats")
+    save_json(os.path.join(out_dir, "MonsterStats.json"), monsters)
+    families = sorted(set(m["family"] for m in monsters))
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "count": len(monsters),
+        "withCurve": sum(1 for m in monsters if m["hasCurve"]),
+        "missingCurve": sorted(missing_curve),
+        "families": families,
+        "curveStats": ["MaxHealth", "MaxStability", "AttackPower", "DefencePower",
+                       "ExperiencePoint", "PartyExperiencePoint", "WeaponExperiencePoint", "Col"],
+        "difficultyLevels": ["Story", "Normal", "Hard", "VeryHard"],
+        "levelRange": [1, 301],
+        "file": "DataAssets/Database/MonsterStats/MonsterStats.json",
+    })
+    print(f"  Monster stats: {len(monsters)} enemy Blueprints ({len(families)} families), "
+          f"{sum(1 for m in monsters if m['hasCurve'])} with a level curve "
+          f"({len(missing_curve)} missing: {missing_curve})")
+    return monsters
+
+
+def build_npcs():
+    """
+    Builds Content/ROD/DataAssets/Database/NPCs/NPCs.json -- the
+    Characters > NPCs section, from the four subfolders of
+    DataAssets/Character/NPC/ (the ~200 files sitting unsurveyed in
+    the Phase 1 unclaimed tray since the CHR-era Content.zip landed):
+
+      - DataTable/DT_NPC_001..006: per-town rosters -- ID lists ONLY
+        (the row struct has a single ID field, confirmed), numbered
+        001-006 matching the six towns that have Town_00X detail
+        files. Shared/DT_NPC_MoveSpeed: 8 named walk/run speeds.
+      - Data/<folder>/NPCData_<id>: the NPC definitions (114) --
+        NameKey, AppearanceData.PartsID, sequence data, bLookAt. The
+        <folder> (001_TownOfBigining / 009_FacialCheck) is kept as
+        the placement folder; 009_FacialCheck is a debug set.
+      - Parts/NPCParts_<id>: appearance mesh references (128 numeric
+        + 1 shared AnimData asset) -- Head/HeadGear/Body skeletal-mesh
+        paths into CHR/, a direct forward-reference to the future
+        Skeleton Assets tab.
+      - Action/<folder>/NPCAction_<id>_<n>: placed action scripts
+        (65 files, 64 NPC ids) -- root locations, move types
+        (ENPCMoveSpeedType), gesture animation montage references.
+
+    HONEST LIMITS, all confirmed before building:
+      - NPC display names DO NOT RESOLVE: every NPCData carries a
+        NameKey (NPC1002 style), and 0 of 114 exist in ANY language's
+        localization tables -- generic townsfolk are unnamed in this
+        export. NPCs are therefore shown by ID with the raw NameKey,
+        and there is NO npc localization builder (nothing to build).
+      - The three sources only partially overlap, and the section
+        shows the union honestly rather than hiding the mismatches:
+        81 roster IDs (some with no data file -- e.g. IDs 4-13 appear
+        in town rosters 002-006 with no NPCData anywhere), 114 data
+        files (102 of them in NO roster -- the 9xxx FacialCheck set
+        plus others), 74 orphan parts files referenced by no NPC, and
+        38 referenced PartsIDs with NO parts file (the 9xxx debug set
+        references appearance parts that don't exist in the export).
+    """
+    npc_root = os.path.join(SRC, "DataAssets/Character/NPC")
+
+    # Rosters
+    roster_of = {}  # npcId -> {"table": "DT_NPC_001", "townId": "001"}
+    for path in sorted(glob.glob(os.path.join(npc_root, "DataTable/DT_NPC_0*.json"))):
+        table = os.path.basename(path).replace(".json", "")
+        town_id = table.split("_")[-1]
+        for row in load_json(path)[0].get("Rows", {}).values():
+            if "ID" in row:
+                roster_of[row["ID"]] = {"table": table, "townId": town_id}
+
+    move_speeds = {}
+    ms_path = os.path.join(npc_root, "DataTable/Shared/DT_NPC_MoveSpeed.json")
+    if os.path.exists(ms_path):
+        move_speeds = {k: v.get("MoveSpeed") for k, v in load_json(ms_path)[0].get("Rows", {}).items()}
+
+    # Parts
+    parts_files = {}  # partsId -> {file, meshes}
+    for path in sorted(glob.glob(os.path.join(npc_root, "Parts/NPCParts_*.json"))):
+        m = re.search(r"NPCParts_(\d+)\.json$", path)
+        if not m:
+            continue  # NPCParts_AnimData.json -- the shared anim asset, recorded in the index instead
+        props = load_json(path)[0].get("Properties", {})
+        meshes = {}
+        for slot in ("HeadMesh", "HeadGearMesh", "BodyMesh"):
+            ap = (props.get(slot) or {}).get("AssetPathName") or ""
+            if ap:
+                meshes[slot.replace("Mesh", "").lower()] = ap.split(".")[0]
+        parts_files[int(m.group(1))] = {
+            "file": os.path.relpath(path, SRC).replace(os.sep, "/"),
+            "meshes": meshes,
+        }
+
+    # Actions
+    actions_of = {}  # npcId -> [ {file, moveTypes, gestureAnims} ]
+    for path in sorted(glob.glob(os.path.join(npc_root, "Action/*/NPCAction_*.json"))):
+        m = re.search(r"NPCAction_(\d+)_(\d+)\.json$", path)
+        if not m:
+            continue
+        text = open(path, "r", encoding="utf-8", errors="ignore").read()
+        move_types = sorted(set(t.split("::")[-1] for t in re.findall(r'"ENPCMoveSpeedType::\w+"', text.replace('"', '"'))))
+        # more robust: regex on raw
+        move_types = sorted(set(re.findall(r"ENPCMoveSpeedType::(\w+)", text)))
+        gesture_anims = sorted(set(re.findall(r"AnimMontage'([\w]+)'", text)))
+        actions_of.setdefault(int(m.group(1)), []).append({
+            "file": os.path.relpath(path, SRC).replace(os.sep, "/"),
+            "moveTypes": move_types,
+            "gestureAnimations": gesture_anims,
+        })
+
+    # Data files (the primary entries), then roster-only IDs appended
+    npcs = []
+    data_ids = set()
+    for path in sorted(glob.glob(os.path.join(npc_root, "Data/*/NPCData_*.json"))):
+        m = re.search(r"Data/([^/]+)/NPCData_(\d+)\.json$", path.replace(os.sep, "/"))
+        folder, npc_id = m.group(1), int(m.group(2))
+        data_ids.add(npc_id)
+        props = load_json(path)[0].get("Properties", {})
+        parts_id = (props.get("AppearanceData") or {}).get("PartsID")
+        parts = parts_files.get(parts_id) if parts_id is not None else None
+        npcs.append({
+            "npcId": npc_id,
+            "nameKey": props.get("NameKey"),
+            "nameKeyResolves": False,  # 0/114 exist in any language's tables -- confirmed, see docstring
+            "placementFolder": folder,
+            "isDebugSet": folder.startswith("009_"),
+            "roster": roster_of.get(npc_id),
+            "dataFile": os.path.relpath(path, SRC).replace(os.sep, "/"),
+            "partsId": parts_id,
+            "partsFile": parts["file"] if parts else None,
+            "meshes": parts["meshes"] if parts else None,
+            "partsMissing": parts_id is not None and parts is None,
+            "lookAt": bool(props.get("bLookAt")),
+            "sequenceCount": len(props.get("SequenceData") or []),
+            "actions": actions_of.get(npc_id, []),
+        })
+    for npc_id, roster in sorted(roster_of.items()):
+        if npc_id in data_ids:
+            continue
+        npcs.append({
+            "npcId": npc_id,
+            "nameKey": None,
+            "nameKeyResolves": False,
+            "placementFolder": None,
+            "isDebugSet": False,
+            "roster": roster,
+            "dataFile": None,  # in a town roster but has NO NPCData file anywhere -- shown, not hidden
+            "partsId": None, "partsFile": None, "meshes": None, "partsMissing": False,
+            "lookAt": False, "sequenceCount": 0,
+            "actions": actions_of.get(npc_id, []),
+        })
+
+    npcs.sort(key=lambda n: n["npcId"])
+    used_parts = set(n["partsId"] for n in npcs if n["partsId"] is not None)
+    orphan_parts = sorted(set(parts_files) - used_parts)
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/NPCs")
+    save_json(os.path.join(out_dir, "NPCs.json"), npcs)
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "count": len(npcs),
+        "withDataFile": len(data_ids),
+        "rosterOnly": len(npcs) - len(data_ids),
+        "inRoster": sum(1 for n in npcs if n["roster"]),
+        "debugSet": sum(1 for n in npcs if n["isDebugSet"]),
+        "withParts": sum(1 for n in npcs if n["partsFile"]),
+        "partsMissing": sum(1 for n in npcs if n["partsMissing"]),
+        "orphanPartsFiles": len(orphan_parts),
+        "withActions": sum(1 for n in npcs if n["actions"]),
+        "moveSpeeds": move_speeds,
+        "hasSharedAnimData": os.path.exists(os.path.join(npc_root, "Parts/NPCParts_AnimData.json")),
+        "nameKeysResolvable": 0,
+        "file": "DataAssets/Database/NPCs/NPCs.json",
+    })
+    print(f"  NPCs: {len(npcs)} total ({len(data_ids)} with data files, {len(npcs) - len(data_ids)} roster-only, "
+          f"{sum(1 for n in npcs if n['isDebugSet'])} debug-set), {sum(1 for n in npcs if n['partsFile'])} with appearance parts "
+          f"({len(orphan_parts)} orphan parts files), {sum(1 for n in npcs if n['actions'])} with placed actions; "
+          f"0 name keys resolve in any language (confirmed)")
+    return {n["npcId"]: n for n in npcs}
+
+
+def build_active_skills():
+    """
+    Builds Content/ROD/DataAssets/Database/ActiveSkills/ActiveSkills.json
+    from DataAssets/Parameters/Hero/DT_ActiveSkillList.json -- the
+    table §14 recorded as deliberately left unbuilt while ActiveSkill1's
+    in-game trigger was unconfirmed; the user has now asked for it as
+    part of the Characters cluster.
+
+    10 rows: internal name, soul cost (Decrease_Soul), cooldown
+    seconds, and a thumbnail texture (T_ActiveSkill1..10.png -- all 10
+    PNGs confirmed present under Widget/.../ActiveSkill/, copied by the
+    textures section). The internal names (Recovery, Search, ...) are
+    ENGLISH DEVELOPER STRINGS, not localization: no ActiveSkillName_*
+    key family exists in any language (searched), so there is NO
+    localization builder for this section and the app labels the name
+    as internal/unlocalized rather than pretending it's translated.
+    """
+    rows = load_json(os.path.join(SRC, "DataAssets/Parameters/Hero/DT_ActiveSkillList.json"))[0]["Rows"]
+    skills = []
+    for row in rows.values():
+        tex = (row.get("ThumbnailTexture") or {}).get("AssetPathName") or ""
+        tex_rel = None
+        if tex.startswith("/Game/ROD/"):
+            tex_rel = "Content/ROD/" + tex[len("/Game/ROD/"):].split(".")[0] + ".png"
+        skills.append({
+            "id": row.get("ID"),
+            "internalName": row.get("ActiveSkillName"),
+            "soulCost": row.get("Decrease_Soul"),
+            "coolTimeSeconds": row.get("CoolTime"),
+            "iconTexture": tex_rel,
+            "hasIcon": bool(tex_rel) and os.path.exists(os.path.join(SRC, tex[len("/Game/ROD/"):].split(".")[0] + ".png")),
+        })
+    skills.sort(key=lambda s: s["id"] or "")
+    out_dir = os.path.join(OUT, "DataAssets/Database/ActiveSkills")
+    save_json(os.path.join(out_dir, "ActiveSkills.json"), skills)
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "count": len(skills),
+        "withIcon": sum(1 for s in skills if s["hasIcon"]),
+        "localizedNames": 0,  # no ActiveSkillName_* keys exist in any language -- confirmed
+        "file": "DataAssets/Database/ActiveSkills/ActiveSkills.json",
+    })
+    print(f"  Active skills: {len(skills)} ({sum(1 for s in skills if s['hasIcon'])} with icons); "
+          f"names are internal developer strings -- no localization exists (confirmed)")
+    return skills
+
+
+# The nine officially named status effects. Codes are the exact
+# TutorialTitle_/TutorialDetailwindow_ key suffixes; the key pairs are
+# confirmed present in ALL 13 languages. 'BadStatus' is the general
+# "Status Effects" overview tutorial, kept separate from the nine.
+AILMENT_CODES = ["Burn", "Darkness", "Fatigue", "Frost", "InstantDeath",
+                 "Paralysis", "Poison", "Sleep", "Vertigo"]
+
+
+def build_ailments():
+    """
+    Builds Content/ROD/DataAssets/Database/Ailments/Ailments.json --
+    the Characters > Ailments section.
+
+    NO status-effect data table or enum exists anywhere in DataAssets
+    (searched for EBadStatus/StatusEffect/State* enums: the only hit
+    is EVoiceState) -- ailment MECHANICS live in unexported
+    Blueprints, the same honest situation as monster HP. What the
+    export DOES officially provide, and what this section is built
+    from:
+      - the tutorial localization pairs (TutorialTitle_<code> +
+        TutorialDetailwindow_<code>_01) for exactly NINE status
+        effects, present in all 13 languages -- official names AND
+        effect descriptions;
+      - the state icon inventory under
+        Widget/Common/IconImage/StateIconImages/: 9 T_BadStateIcon +
+        9 T_GoodStateIcon + 5 T_StateIcon + up/down arrows. NINE bad
+        icons for NINE named ailments is a suggestive count match,
+        but NO data maps icon numbers to ailment codes -- the icons
+        are shown as an inventory, deliberately NOT paired to
+        specific ailments.
+    """
+    icon_dir = os.path.join(SRC, "Widget/Common/IconImage/StateIconImages")
+    icons = sorted(os.listdir(icon_dir)) if os.path.isdir(icon_dir) else []
+    icon_inventory = {
+        "bad": [i for i in icons if i.startswith("T_BadStateIcon")],
+        "good": [i for i in icons if i.startswith("T_GoodStateIcon")],
+        "generic": [i for i in icons if re.match(r"T_StateIcon\d", i)],
+        "other": [i for i in icons if i.startswith("T_StateIcon_")],
+    }
+    ailments = [{
+        "code": code,
+        "titleKey": f"TutorialTitle_{code}",
+        "detailKey": f"TutorialDetailwindow_{code}_01",
+    } for code in AILMENT_CODES]
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/Ailments")
+    save_json(os.path.join(out_dir, "Ailments.json"), ailments)
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "count": len(ailments),
+        "generalTitleKey": "TutorialTitle_BadStatus",
+        "generalDetailKey": "TutorialDetailwindow_BadStatus_01",
+        "iconInventory": icon_inventory,
+        "iconDir": "Content/ROD/Widget/Common/IconImage/StateIconImages",
+        "iconPairingConfirmed": False,  # 9 bad icons, 9 ailments -- count match only, no mapping data exists
+        "file": "DataAssets/Database/Ailments/Ailments.json",
+    })
+    print(f"  Ailments: {len(ailments)} officially named status effects; icon inventory "
+          f"{len(icon_inventory['bad'])} bad / {len(icon_inventory['good'])} good / "
+          f"{len(icon_inventory['generic']) + len(icon_inventory['other'])} generic (pairing to ailments NOT confirmed)")
+    return {a["code"]: a for a in ailments}
+
+
+def build_ailment_localization(all_ailments):
+    """
+    Per-language name + description for each ailment, keyed by code,
+    from the tutorial key pairs (verified present in all 13 languages).
+    The name stored is the FULL official title ("Status Effects: Burn")
+    -- stripping the prefix per-language would be guessing at each
+    language's separator conventions, so the view shows the official
+    string as-is. The general "Status Effects" overview entry is
+    stored under the reserved code "_general".
+    """
+    loc_dir = os.path.join(OUT, "DataAssets/Database/Ailments/Localization")
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    manifest = {}
+    codes = list(all_ailments) + ["_general"]
+
+    for lang_code, lang_label in SUPPORTED_LANGUAGES.items():
+        loc_path = os.path.join(loc_dir, f"{lang_code}.json")
+        existing = load_json(loc_path) if os.path.exists(loc_path) else {}
+        general_strings = load_official_strings(lang_code)
+        entries = dict(existing)
+
+        for code in codes:
+            if code in entries:
+                continue
+            tk = "TutorialTitle_BadStatus" if code == "_general" else f"TutorialTitle_{code}"
+            dk = "TutorialDetailwindow_BadStatus_01" if code == "_general" else f"TutorialDetailwindow_{code}_01"
+            name_raw = general_strings.get(tk) or english_general.get(tk)
+            desc_raw = general_strings.get(dk) or english_general.get(dk)
+            entries[code] = {
+                "name": _resolve_rep_templates(name_raw, general_strings, english_general) if name_raw else "",
+                "description": _resolve_rep_templates(desc_raw, general_strings, english_general) if desc_raw else "",
+                "verified": bool(name_raw and desc_raw),
+                "source": "Official tutorial localization (Game.json)" if (name_raw and desc_raw) else None,
+            }
+
+        save_json(loc_path, entries)
+        manifest[lang_code] = {
+            "label": lang_label,
+            "file": f"DataAssets/Database/Ailments/Localization/{lang_code}.json",
+            "verifiedCount": sum(1 for v in entries.values() if v["verified"]),
+            "totalCount": len(entries),
+        }
+
+    manifest["_defaultLanguage"] = DEFAULT_LANGUAGE
+    manifest["_gameLaunchDate"] = GAME_LAUNCH_DATE
+    save_json(os.path.join(loc_dir, "_manifest.json"), manifest)
+    print(f"  Ailment localization: {len(codes)} entries x {len(SUPPORTED_LANGUAGES)} languages")
+
+
+def build_shops():
+    """
+    Builds Content/ROD/DataAssets/Database/Shops/Shops.json from
+    DataAssets/Games/DataTables/DT_ShopItemList.json -- a single-row
+    table whose one "Shop" row carries a ShopList map of six shops
+    (keys "1".."6"), each a plain stock list of Cost-category items.
+
+    The load-bearing discovery (confirmed, not inferred): SHOPS SELL
+    RECIPES. Every stock entry is Category Cost, and Cost items are
+    recipe purchase tokens -- all 59 stock entries across the six
+    shops resolve 1:1 through _load_cost_recipe_map() to a recipe's
+    real ItemKey (0 duplicates, 0 misses). The view joins those keys
+    against the SAME loaded Recipes data the Items > Recipes tab
+    renders, so names/costs/materials come from one source.
+
+    HONESTLY UNCONFIRMED: which shop is in which town. Six shops and
+    six towns with detail files is a suggestive count match (the same
+    001-006 numbering DT_NPC uses), but NO field links a ShopList key
+    to a town -- shops are shown as "Shop 1".."Shop 6" with that noted,
+    not force-assigned to towns.
+    """
+    shop_row = load_json(os.path.join(SRC, "DataAssets/Games/DataTables/DT_ShopItemList.json"))[0]["Rows"]["Shop"]
+    cost_map = _load_cost_recipe_map()
+    shops = []
+    unresolved = 0
+    for s in shop_row.get("ShopList", []):
+        entries = []
+        for item in s.get("Value", {}).get("Items", []):
+            cat = strip_enum(item.get("Category", "")).replace("ItemCategory_", "")
+            item_id = item.get("ItemId")
+            rec = cost_map.get(item_id) if cat == "Cost" else None
+            if not rec:
+                unresolved += 1
+            entries.append({
+                "category": cat,
+                "itemId": item_id,
+                "recipeItemKey": rec["recipeItemKey"] if rec else None,
+                "recipeMap": rec["recipeMap"] if rec else None,
+            })
+        shops.append({"shopId": s.get("Key"), "entries": entries})
+
+    shops.sort(key=lambda x: int(x["shopId"]) if str(x["shopId"]).isdigit() else 0)
+    out_dir = os.path.join(OUT, "DataAssets/Database/Shops")
+    save_json(os.path.join(out_dir, "Shops.json"), shops)
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "count": len(shops),
+        "stockTotal": sum(len(s["entries"]) for s in shops),
+        "recipeResolved": sum(1 for s in shops for e in s["entries"] if e["recipeItemKey"]),
+        "unresolved": unresolved,
+        "townMappingConfirmed": False,  # 6 shops / 6 towns is a count match only -- no linking field exists
+        "file": "DataAssets/Database/Shops/Shops.json",
+    })
+    print(f"  Shops: {len(shops)} shops, {sum(len(s['entries']) for s in shops)} stock entries "
+          f"({sum(1 for s in shops for e in s['entries'] if e['recipeItemKey'])} resolve to recipes, {unresolved} unresolved); "
+          f"shop-to-town mapping NOT confirmed by any field")
+    return shops
+
+
+def build_chests(all_weapons, all_armor):
+    """
+    Builds Content/ROD/DataAssets/Database/Chests/Chests.json from
+    DataAssets/WorldAdmin/DT_FixTBoxTable.json (526 fixed treasure
+    boxes -- the FixTBoxTable DA_InGame points at), resolving each
+    chest's contents through the SAME shared pool resolver Drops uses
+    (_build_resolved_item_pools), so a pool can never resolve
+    differently between the two sections. This is where most of the
+    ~900 item pools the Drops section found unreferenced by monster
+    rewards turn out to live.
+
+    Chest keys are TB_{location}_{n}, and the location fragment is the
+    SAME location naming the gate registry uses after its SA_/WT_
+    prefix -- 522 of 526 chests match a registered gate's location
+    fragment exactly (checked, not assumed), giving each chest a real
+    place in the world via the Gates/Areas tabs; the view does that
+    join client-side against the loaded gate list. NO chest placement
+    coordinates exist in the exported levels (searched) -- the gate
+    link is location CONTEXT, deliberately not a map position. 3
+    referenced pool keys are missing from DT_ItemLotTable and are
+    listed per chest rather than hidden.
+    """
+    tb_rows = load_json(os.path.join(SRC, "DataAssets/WorldAdmin/DT_FixTBoxTable.json"))[0]["Rows"]
+    pools, _unresolved = _build_resolved_item_pools(all_weapons, all_armor)
+
+    chests = []
+    for key, row in tb_rows.items():
+        m = re.match(r"^TB_(.+)_(\d+)$", key)
+        location = m.group(1) if m else None
+        pool_keys = [k for k in row.get("ItemLotTableKeys", []) if k and k != "None"]
+        chests.append({
+            "chestId": key,
+            "location": location,
+            "chestNum": int(m.group(2)) if m else None,
+            "poolKeys": pool_keys,
+            "pools": {k: pools[k] for k in pool_keys if k in pools},
+            "missingPoolKeys": [k for k in pool_keys if k not in pools],
+        })
+
+    chests.sort(key=lambda c: (c["location"] or "", c["chestNum"] or 0, c["chestId"]))
+    out_dir = os.path.join(OUT, "DataAssets/Database/Chests")
+    save_json(os.path.join(out_dir, "Chests.json"), chests)
+    locations = sorted(set(c["location"] for c in chests if c["location"]))
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "count": len(chests),
+        "locations": len(locations),
+        "withPools": sum(1 for c in chests if c["pools"]),
+        "missingPoolRefs": sum(len(c["missingPoolKeys"]) for c in chests),
+        "placementCoordinates": False,  # none exist in the exported levels -- searched
+        "file": "DataAssets/Database/Chests/Chests.json",
+    })
+    print(f"  Chests: {len(chests)} fixed treasure boxes across {len(locations)} locations, "
+          f"{sum(1 for c in chests if c['pools'])} with resolved pools, "
+          f"{sum(len(c['missingPoolKeys']) for c in chests)} missing pool refs (shown per chest)")
+    return {c["chestId"]: c for c in chests}
+
+
+def build_chest_localization(all_chests):
+    """
+    Per-language display name for every distinct resolvable itemKey in
+    chest pools -- identical shape and resolver to
+    build_monster_drop_localization (the two sections share the pool
+    resolver, so they share the localization approach; entries overlap
+    between the two files by design, per-category separation).
+    """
+    loc_dir = os.path.join(OUT, "DataAssets/Database/Chests/Localization")
+    english_general = load_official_strings(DEFAULT_LANGUAGE)
+    item_keys = sorted(set(
+        s["itemKey"]
+        for c in all_chests.values()
+        for slots in c["pools"].values()
+        for s in slots
+        if s.get("itemKey")
+    ))
+    manifest = {}
+    for lang_code, lang_label in SUPPORTED_LANGUAGES.items():
+        loc_path = os.path.join(loc_dir, f"{lang_code}.json")
+        existing = load_json(loc_path) if os.path.exists(loc_path) else {}
+        general_strings = load_official_strings(lang_code)
+        entries = dict(existing)
+        for key in item_keys:
+            if key in entries:
+                continue
+            name, verified, source = "", False, None
+            raw = general_strings.get(key) or english_general.get(key)
+            if raw:
+                name = _resolve_rep_templates(raw, general_strings, english_general)
+                verified = True
+                source = "Official game localization (Game.json)"
+                if key not in general_strings and key in english_general:
+                    source = f"Fallback to English (no {lang_code} translation found)"
+            entries[key] = {"name": name, "verified": verified, "source": source}
+        save_json(loc_path, entries)
+        manifest[lang_code] = {
+            "label": lang_label,
+            "file": f"DataAssets/Database/Chests/Localization/{lang_code}.json",
+            "verifiedCount": sum(1 for v in entries.values() if v["verified"]),
+            "totalCount": len(entries),
+        }
+    manifest["_defaultLanguage"] = DEFAULT_LANGUAGE
+    manifest["_gameLaunchDate"] = GAME_LAUNCH_DATE
+    save_json(os.path.join(loc_dir, "_manifest.json"), manifest)
+    print(f"  Chest localization: {len(item_keys)} distinct item keys x {len(SUPPORTED_LANGUAGES)} languages")
+
+
+GUIDES_DIR = os.path.join(PROJECT_ROOT, "guides")
+GUIDE_UPLOADS_DIR = os.path.join(PROJECT_ROOT, "uploads")
+
+DEFAULT_GUIDE_MANIFEST = {
+    "maxGuides": 20,
+    "maxImagesPerGuide": 20,
+    "maxImageSizeMB": 25,
+    "maxGuideFileSizeMB": 10,
+    "allowEditing": True,
+}
+
+# The seeded example guide, embedded here so guides_init can create it
+# on a fresh instance without any file to copy from. Kept byte-for-byte
+# in sync with the version originally shipped in guides/.
+SEEDED_GUIDE_ID = "getting-started-installing-unreal-engine"
+SEEDED_GUIDE_CONTENT = """# Getting Started: Installing Unreal Engine
+
+This guide walks through installing Unreal Engine for Echoes of Aincrad modding —
+from creating an Epic Games account to opening the editor for the first time.
+
+> Screenshot placeholders below render as dashed boxes until real images are added.
+> To replace one: open this guide in **Edit**, put your cursor on the placeholder
+> line, delete it, and paste (Ctrl+V) or drag & drop your screenshot — the image
+> uploads automatically and appears exactly where you dropped it.
+
+---
+
+## Step 1 — Create an Epic Games account
+
+Go to [epicgames.com](https://www.epicgames.com) and sign up (or sign in if you
+already have an account from Fortnite or the Epic Games Store). Unreal Engine is
+free for this kind of use.
+
+![Screenshot: Epic Games sign-up page](uploads/getting-started-installing-unreal-engine/step-1.png)
+
+## Step 2 — Download the Epic Games Launcher
+
+From the Epic Games site, download the **Epic Games Launcher** installer for your
+platform and run it. The launcher manages engine versions, so you rarely need to
+visit the website again after this.
+
+![Screenshot: Epic Games Launcher download button](uploads/getting-started-installing-unreal-engine/step-2.png)
+
+## Step 3 — Open the Unreal Engine tab
+
+Launch the Epic Games Launcher, sign in, and select the **Unreal Engine** tab in
+the left sidebar, then the **Library** tab along the top.
+
+![Screenshot: Launcher with Unreal Engine > Library selected](uploads/getting-started-installing-unreal-engine/step-3.png)
+
+## Step 4 — Install an engine version
+
+Click the **＋** next to *Engine Versions* and pick the version matching the game's
+engine. Choose your install location — a full install needs roughly 30-60 GB
+depending on options.
+
+- Under **Options**, you can uncheck target platforms you don't need to save space.
+- Keep *Engine Source* unchecked unless you know you need it.
+
+![Screenshot: Engine version selector with Options expanded](uploads/getting-started-installing-unreal-engine/step-4.png)
+
+## Step 5 — Wait for the install and verify
+
+The launcher downloads and verifies the engine. When the button on the engine slot
+changes to **Launch**, the install is complete.
+
+![Screenshot: Engine slot showing the Launch button](uploads/getting-started-installing-unreal-engine/step-5.png)
+
+## Step 6 — First launch
+
+Click **Launch**. The Unreal Project Browser opens — this is where you'll create
+the project used for building mods. Creating and configuring that project is
+covered in the next guide.
+
+![Screenshot: Unreal Project Browser on first launch](uploads/getting-started-installing-unreal-engine/step-6.png)
+
+---
+
+## What's next
+
+- Creating a mod project (separate guide)
+- Importing assets extracted with this toolkit — see the Asset Inspector and the
+  per-asset download buttons for `psk`/`fbx`/`blend` files
+- Repacking and testing in-game
+
+> Tip: the toolkit's **Data Coverage** page lists exactly which game data is
+> confirmed vs. inferred — check it before relying on any value in your mod.
+"""
+
+
+def build_guides_init():
+    """
+    Initializes the Modding Guides storage: creates guides/ and
+    uploads/ at the PROJECT ROOT (user content, deliberately outside
+    Content/ROD -- the only section whose outputs use the
+    project-root "//" convention in expectedOutputs), writes
+    guides/manifest.json with the default limits, and seeds the
+    Getting Started example guide.
+
+    STRICTLY create-only: nothing here ever overwrites an existing
+    file, so re-running the section (or the full pipeline) can never
+    clobber a user's edited manifest limits or their version of the
+    seeded guide. Exists as an explicit, runnable focus build because
+    lazy server-side folder creation failed with EACCES in a real
+    Docker deployment (the app directory was owned by root while node
+    ran unprivileged, and the failure only surfaced at request time
+    as an unhandled 500) -- running this init where the filesystem IS
+    writable (image build, entrypoint, or the dashboard button) makes
+    the storage exist up front; if THIS fails with a permission
+    error, it fails loudly at init time with the fix in the message
+    instead of at a user's first save.
+    """
+    created = []
+    try:
+        for d in (GUIDES_DIR, GUIDE_UPLOADS_DIR):
+            if not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+                created.append(os.path.relpath(d, PROJECT_ROOT) + "/")
+        manifest_path = os.path.join(GUIDES_DIR, "manifest.json")
+        if not os.path.exists(manifest_path):
+            save_json(manifest_path, DEFAULT_GUIDE_MANIFEST)
+            created.append("guides/manifest.json")
+        seeded_path = os.path.join(GUIDES_DIR, f"{SEEDED_GUIDE_ID}.md")
+        if not os.path.exists(seeded_path):
+            with open(seeded_path, "w", encoding="utf-8") as f:
+                f.write(SEEDED_GUIDE_CONTENT)
+            created.append(f"guides/{SEEDED_GUIDE_ID}.md")
+    except PermissionError as e:
+        raise PermissionError(
+            f"Cannot create Modding Guides storage under {PROJECT_ROOT}: {e}. "
+            "The process user lacks write permission -- in Docker, chown the app "
+            "directory (or mount guides/ and uploads/ as writable volumes) for the "
+            "user node runs as, then re-run this section."
+        )
+    if created:
+        print(f"  Guides init: created {', '.join(created)}")
+    else:
+        print("  Guides init: guides/, uploads/, manifest, and seeded guide all present -- nothing to create (create-only by design)")
+
+
+# Sidecar extensions for downloadable binary companions, grouped by
+# asset kind. Files sit in the SAME folder with the SAME stem as their
+# JSON (verified: 417 of 420 sidecars in the current export match; the
+# 3 orphans -- a Temp folder + one stem mismatch -- are counted in the
+# index, not hidden). blend has no files in the current export yet but
+# is supported for when they're uploaded (user-stated workflow).
+SKELETON_SIDECAR_EXTS = ["psk", "pskx", "uemodel", "blend"]
+ANIMATION_SIDECAR_EXTS = ["psa", "ueanim"]
+
+
+def _find_sidecars(json_path, exts):
+    """Same-folder, same-stem companion files for a JSON asset."""
+    stem = json_path[:-5]  # strip .json
+    found = {}
+    for ext in exts:
+        p = f"{stem}.{ext}"
+        if os.path.exists(os.path.join(SRC, p)):
+            found[ext] = p
+    return found
+
+
+def build_asset_skeletons():
+    """
+    Builds Content/ROD/DataAssets/_AssetInspector/Skeletons.json --
+    the Asset Inspector's Skeletons/Meshes tab over the CHR/ and ITM/
+    trees (the CHR folder finally getting its section, deferred to
+    now per the roadmap reshuffle, unblocked by the 9 new asset
+    exports).
+
+    One entry per SK_*.json skeletal-mesh asset (469 in the current
+    export), grouped with its same-folder companions by the
+    user-documented naming conventions, each verified against the
+    real tree before building:
+      - {stem}_Skeleton.json         the bone skeleton (128)
+      - PHYS_{restOfStem}.json OR {stem}_PhysicsAsset.json
+                                     the physics asset (174 + 26 --
+                                     BOTH real conventions exist)
+      - {stem}_MorphData.json        morph data, sometimes (28)
+      - sidecar binaries psk/pskx/uemodel/blend with the same stem,
+        downloadable via the EXISTING /api/pipeline/download-file
+        endpoint (it already serves any raw-export path with
+        traversal protection -- zero server changes needed).
+    Like every Asset Inspector tab: the JSONs are mesh METADATA and
+    references, never geometry (UE doesn't export geometry to JSON);
+    the sidecars ARE the geometry, which is exactly why they're
+    surfaced for download.
+    """
+    entries = []
+    companion_suffixes = ("_Skeleton", "_MorphData", "_PhysicsAsset")
+    for root in ("CHR", "ITM"):
+        base = os.path.join(SRC, root)
+        if not os.path.isdir(base):
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            for f in sorted(files):
+                if not ((f.startswith("SK_") or f.startswith("SM_")) and f.endswith(".json")):
+                    continue
+                stem = f[:-5]
+                is_static = f.startswith("SM_")
+                if stem.endswith(companion_suffixes):
+                    continue  # companions attach to their mesh entry below
+                rel_dir = os.path.relpath(dirpath, SRC).replace(os.sep, "/")
+                rel_json = f"{rel_dir}/{f}"
+                # PHYS_ convention swaps the SK_ prefix; _PhysicsAsset appends.
+                phys_prefixed = f"{rel_dir}/PHYS_{stem[3:]}.json"
+                phys_suffixed = f"{rel_dir}/{stem}_PhysicsAsset.json"
+                entry = {
+                    "name": stem,
+                    "jsonPath": rel_json,
+                    "folder": rel_dir,
+                    # SM_ static meshes (e.g. enemy StaticMesh/ subfolders,
+                    # 11 pskx sidecars in the current export) are a real,
+                    # separate asset kind cataloged alongside SK_ skeletal
+                    # meshes -- found when the pskx census (33) didn't
+                    # match the first catalog pass (22).
+                    "kind": "StaticMesh" if is_static else "SkeletalMesh",
+                    "family": "/".join(rel_dir.split("/")[:2]),
+                    "skeletonJson": (f"{rel_dir}/{stem}_Skeleton.json"
+                        if not is_static and os.path.exists(os.path.join(dirpath, f"{stem}_Skeleton.json")) else None),
+                    "physicsJson": (phys_prefixed if os.path.exists(os.path.join(SRC, phys_prefixed))
+                                    else (phys_suffixed if os.path.exists(os.path.join(SRC, phys_suffixed)) else None)),
+                    "morphDataJson": f"{rel_dir}/{stem}_MorphData.json"
+                        if os.path.exists(os.path.join(dirpath, f"{stem}_MorphData.json")) else None,
+                    "sidecars": _find_sidecars(rel_json, SKELETON_SIDECAR_EXTS),
+                    # Binaries can also sit on the SKELETON companion's stem
+                    # (e.g. SK_X_Skeleton.pskx) -- 11 of the current export's
+                    # 33 pskx files live there, found when the first census
+                    # count didn't match the catalog's.
+                    "skeletonSidecars": _find_sidecars(f"{rel_dir}/{stem}_Skeleton.json", SKELETON_SIDECAR_EXTS)
+                        if os.path.exists(os.path.join(dirpath, f"{stem}_Skeleton.json")) else {},
+                }
+                entries.append(entry)
+    entries.sort(key=lambda e: e["jsonPath"])
+
+    out_dir = os.path.join(OUT, "DataAssets/_AssetInspector")
+    save_json(os.path.join(out_dir, "Skeletons.json"), entries)
+    by_family = {}
+    for e in entries:
+        by_family[e["family"]] = by_family.get(e["family"], 0) + 1
+    sidecar_counts = {ext: sum(1 for e in entries if ext in e["sidecars"] or ext in e["skeletonSidecars"])
+                      for ext in SKELETON_SIDECAR_EXTS}
+    print(f"  Asset skeletons: {len(entries)} meshes "
+          f"({sum(1 for e in entries if e['kind'] == 'SkeletalMesh')} skeletal / {sum(1 for e in entries if e['kind'] == 'StaticMesh')} static) "
+          f"({sum(1 for e in entries if e['skeletonJson'])} with _Skeleton, "
+          f"{sum(1 for e in entries if e['physicsJson'])} with physics, "
+          f"{sum(1 for e in entries if e['morphDataJson'])} with morph data); "
+          f"sidecars: {sidecar_counts}")
+    return {"count": len(entries), "byFamily": by_family, "sidecarCounts": sidecar_counts}
+
+
+def build_asset_animations():
+    """
+    Builds Content/ROD/DataAssets/_AssetInspector/Animations.json --
+    the Asset Inspector's Animations tab over the ANM/ tree (plus the
+    handful of AS_/A_ sequences living beside CHR costume assets).
+
+    One entry per animation-asset JSON, kind classified by the
+    verified filename prefixes: A_ AnimSequence, AM_ AnimMontage,
+    BS_ BlendSpace, AC_ AnimComposite, AS_ AnimSequence (costume-side
+    naming). Sidecar binaries psa/ueanim with the same stem are
+    downloadable via the existing download-file endpoint. Sidecars
+    with NO same-stem JSON sibling (3 in the current export, a Temp
+    folder + one stem mismatch) are listed in the orphans array --
+    shown, not hidden.
+    """
+    kind_by_prefix = {"A": "AnimSequence", "AM": "AnimMontage", "BS": "BlendSpace",
+                      "AC": "AnimComposite", "AS": "AnimSequence"}
+    entries = []
+    claimed_sidecars = set()
+    roots = ("ANM", "CHR")
+    for root in roots:
+        base = os.path.join(SRC, root)
+        if not os.path.isdir(base):
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            for f in sorted(files):
+                if not f.endswith(".json"):
+                    continue
+                m = re.match(r"^(A|AM|BS|AC|AS)_", f)
+                if not m:
+                    continue
+                # CHR/ contains many non-animation A*_ jsons? No -- the A_
+                # prefix census is dominated by ANM sequences; costume-side
+                # AS_/A_ files ARE sequences. Everything matching stays in.
+                rel_dir = os.path.relpath(dirpath, SRC).replace(os.sep, "/")
+                if root == "CHR" and m.group(1) not in ("AS", "A"):
+                    continue  # montages/blendspaces only cataloged from ANM/
+                rel_json = f"{rel_dir}/{f}"
+                sidecars = _find_sidecars(rel_json, ANIMATION_SIDECAR_EXTS)
+                for p in sidecars.values():
+                    claimed_sidecars.add(p)
+                entries.append({
+                    "name": f[:-5],
+                    "jsonPath": rel_json,
+                    "folder": rel_dir,
+                    "kind": kind_by_prefix[m.group(1)],
+                    "sidecars": sidecars,
+                })
+    entries.sort(key=lambda e: e["jsonPath"])
+
+    # Orphan sidecars: binaries with no same-stem json sibling
+    orphans = []
+    for root in roots:
+        base = os.path.join(SRC, root)
+        if not os.path.isdir(base):
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            for f in files:
+                ext = f.rsplit(".", 1)[-1].lower()
+                if ext in ANIMATION_SIDECAR_EXTS:
+                    rel = os.path.relpath(os.path.join(dirpath, f), SRC).replace(os.sep, "/")
+                    if rel not in claimed_sidecars:
+                        orphans.append(rel)
+
+    out_dir = os.path.join(OUT, "DataAssets/_AssetInspector")
+    save_json(os.path.join(out_dir, "Animations.json"), entries)
+    kinds = {}
+    for e in entries:
+        kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
+    sidecar_counts = {ext: sum(1 for e in entries if ext in e["sidecars"]) for ext in ANIMATION_SIDECAR_EXTS}
+    print(f"  Asset animations: {len(entries)} assets {kinds}; sidecars: {sidecar_counts}; orphan sidecars: {len(orphans)}")
+    return {"count": len(entries), "byKind": kinds, "sidecarCounts": sidecar_counts, "orphanSidecars": sorted(orphans)}
+
+
+def _piece_overlap_quality(pieces, piece_extent):
+    """
+    Rough per-area "will this composite look seamless" signal, added
+    after a user-reported visual investigation (verified via direct
+    pixel compositing, not guessed): pieces genuinely overlap by very
+    different amounts area-to-area -- a 3-piece area can share 46-76%
+    of each neighbor's extent (composites cleanly) while a 4-piece
+    area can share as little as 2% between one pair (a hairline
+    sliver, or true separation) -- because this export's
+    PieceMaskMaterial field (the game's own blend mask) is empty, so
+    there's no data to soften a thin-overlap seam the way the real
+    game presumably does. This does NOT indicate a placement bug (the
+    center-anchor position itself is independently verified via
+    terminal-containment testing at 70/71) -- it's a genuine property
+    of how sparsely two specific pieces were authored to overlap.
+
+    For every pair of pieces, computes the overlap fraction of the
+    SMALLER piece's area covered by the intersection rectangle (0 if
+    they don't intersect at all). Returns the minimum such fraction
+    across pairs whose bounding boxes touch at all (pairs with truly
+    zero geometric overlap are counted as isolated separately, since
+    "0% overlap of a touching pair" and "these two don't touch at
+    all" are different, both worth surfacing).
+    """
+    if len(pieces) < 2:
+        return {"minOverlapFraction": 1.0, "isolatedPieceCount": 0, "seamRisk": "none"}
+
+    def rect(p):
+        half = piece_extent / 2.0
+        return (p["centerX"] - half, p["centerY"] - half, p["centerX"] + half, p["centerY"] + half)
+
+    min_frac = None
+    isolated = 0
+    for i, p in enumerate(pieces):
+        touches_any = False
+        best_for_p = 0.0
+        r1 = rect(p)
+        for j, q in enumerate(pieces):
+            if i == j:
+                continue
+            r2 = rect(q)
+            ix = max(0.0, min(r1[2], r2[2]) - max(r1[0], r2[0]))
+            iy = max(0.0, min(r1[3], r2[3]) - max(r1[1], r2[1]))
+            if ix > 0 and iy > 0:
+                touches_any = True
+                frac = (ix * iy) / (piece_extent * piece_extent)
+                best_for_p = max(best_for_p, frac)
+        if not touches_any:
+            isolated += 1
+        else:
+            min_frac = best_for_p if min_frac is None else min(min_frac, best_for_p)
+
+    if min_frac is None:
+        risk = "high" if isolated else "none"
+    elif min_frac < 0.15:
+        risk = "high"
+    elif min_frac < 0.35:
+        risk = "medium"
+    else:
+        risk = "low"
+    if isolated:
+        risk = "high"
+    return {
+        "minOverlapFraction": round(min_frac, 3) if min_frac is not None else None,
+        "isolatedPieceCount": isolated,
+        "seamRisk": risk,
+    }
+
+
+def _resolve_piece_mask_image(mask_asset_path):
+    """
+    Resolves a MapPieceDataDetails' PieceMaskMaterial reference (a
+    MaterialInstanceConstant) to the actual mask PNG it points at, by
+    reading the material JSON's own TextureParameterValues.
+
+    DISCOVERED this session (a later asset export finally included
+    these -- previously PieceMaskMaterial appeared empty for every
+    area checked, which is why the seam-risk workaround shipped
+    first): the mask PNG's alpha channel is flat 255 (it's not an
+    alpha mask); the real per-pixel crop data lives in the RED and
+    GREEN color channels, which trace a boundary-curve shape (visibly
+    a coastline-like line, not a broad radial gradient) rather than a
+    single value -- almost certainly a directional cut line per
+    neighboring piece, encoded two channels at once. No shader graph
+    is exported for M_MapPiece_Mask, so the EXACT R/G combination
+    formula the game's own material uses cannot be recovered with
+    certainty from this JSON metadata alone -- this is stated
+    honestly rather than presented as a verified pixel-perfect
+    algorithm. Applied client-side as a CSS luminance mask-image
+    (which blends R/G/B by standard luminance weighting), a
+    defensible, real-data-driven improvement over both raw
+    uncropped overlap and the earlier synthetic CSS radial-gradient
+    feather it replaces.
+    """
+    if not mask_asset_path:
+        return None
+    rel = mask_asset_path.split("/Game/ROD/")[-1].split(".")[0] + ".json"
+    full = os.path.join(SRC, rel)
+    if not os.path.exists(full):
+        return None
+    try:
+        mat = load_json(full)
+    except Exception:
+        return None
+    mat_obj = next((o for o in mat if o.get("Type") == "MaterialInstanceConstant"), None)
+    if not mat_obj:
+        return None
+    for tex_param in mat_obj.get("Properties", {}).get("TextureParameterValues", []):
+        tex_path = (tex_param.get("ParameterValue") or {}).get("ObjectPath", "")
+        if tex_path.startswith("/Game/ROD/"):
+            png_rel = tex_path[len("/Game/ROD/"):].split(".")[0] + ".png"
+            if os.path.exists(os.path.join(SRC, png_rel)):
+                return f"Content/ROD/{png_rel}"
+    return None
+
+
+def build_static_maps():
+    """
+    Builds Content/ROD/DataAssets/Database/WorldMap/StaticMaps.json --
+    Town Maps and Dungeon Floor Maps, a DIFFERENT (simpler) asset
+    shape than the pieced-together field maps World > Map already
+    covers: each is a single, already-composited image with no
+    per-piece position math needed.
+
+    HONEST LIMIT, stated up front rather than silently omitted: unlike
+    the field map's terminal-coordinate markers, NO coordinate data
+    exists anywhere in this export that is confirmed to be scaled to
+    THESE specific image spaces -- town/dungeon-local marker positions
+    (NPCs, chests, etc. placed on this specific 2D image) would need a
+    separate, dungeon/town-local coordinate table this export doesn't
+    contain (checked: DA_InGame's TerminalDatas are world-space, not
+    town/dungeon-image-space). These are exposed as browsable
+    REFERENCE IMAGES, not interactive marker maps, with that
+    limitation stated in the view rather than faked with placeholder
+    pins.
+
+    Town maps: Widget/MapTexture/TownMap/T_MapImage_Town_{CODE}*.png
+    (a plain full-town image, plus an "_Overall" zoomed-out variant
+    where present). Town CODE here is the SAME 3-letter code World >
+    Towns already uses (e.g. TOB), joined client-side to that data for
+    a display name.
+
+    Dungeon floor maps: Widget/MapTexture/DungeonFloorMap/
+    T_DungeonFloorMap_{SUFFIX}.png. SUFFIX here (e.g. "HTE1", "NTR2")
+    is NOT confirmed to correspond 1:1 with any specific entry in
+    DUNGEON_CODES (which has finer-grained codes like HTE_Anc, HTE_FI,
+    HTE_Und all sharing the "HTE" prefix) -- rather than guess which
+    of several same-prefix dungeons a bare-numbered floor belongs to,
+    each floor is labeled with its raw exported suffix and its
+    3-letter prefix only, honestly unattributed to a specific dungeon
+    name. A "_Way" suffixed variant (tiny images, e.g. 64x32) is a
+    separate small connector/route graphic, not a full floor map, and
+    is listed as its own entry rather than merged in.
+    """
+    towns = []
+    town_dir = os.path.join(SRC, "Widget/MapTexture/TownMap")
+    if os.path.isdir(town_dir):
+        seen_codes = set()
+        for f in sorted(os.listdir(town_dir)):
+            if not f.endswith(".png"):
+                continue
+            m = re.match(r"^T_MapImage_Town_([A-Za-z0-9]+)(_Overall)?\.png$", f)
+            if not m:
+                continue
+            code, is_overall = m.group(1), bool(m.group(2))
+            if code not in seen_codes:
+                seen_codes.add(code)
+                towns.append({"townCode": code, "images": []})
+            entry = next(t for t in towns if t["townCode"] == code)
+            entry["images"].append({
+                "variant": "overall" if is_overall else "full",
+                "image": f"Content/ROD/Widget/MapTexture/TownMap/{f}",
+            })
+
+    dungeon_floors = []
+    dfm_dir = os.path.join(SRC, "Widget/MapTexture/DungeonFloorMap")
+    if os.path.isdir(dfm_dir):
+        for f in sorted(os.listdir(dfm_dir)):
+            if not f.endswith(".png"):
+                continue
+            m = re.match(r"^T_DungeonFloorMap_([A-Za-z]+)(\d+)(_Way)?\.png$", f)
+            if not m:
+                continue
+            prefix, num, is_way = m.group(1), m.group(2), bool(m.group(3))
+            dungeon_floors.append({
+                "prefix": prefix,
+                "floorNumber": int(num),
+                "isWayGraphic": is_way,
+                "suffix": f"{prefix}{num}{'_Way' if is_way else ''}",
+                "image": f"Content/ROD/Widget/MapTexture/DungeonFloorMap/{f}",
+                "dungeonAttributionConfirmed": False,
+            })
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/WorldMap")
+    save_json(os.path.join(out_dir, "StaticMaps.json"), {"towns": towns, "dungeonFloors": dungeon_floors})
+    print(f"  Static maps: {len(towns)} town(s) ({sum(len(t['images']) for t in towns)} images), "
+          f"{len(dungeon_floors)} dungeon floor image(s) -- reference images, no marker coordinates (confirmed none exist)")
+    return {"townCount": len(towns), "dungeonFloorCount": len(dungeon_floors)}
+
+
+def build_world_map(all_chests):
+    """
+    Builds Content/ROD/DataAssets/Database/WorldMap/WorldMap.json --
+    the World > Map tab: an interactive floor-map overview + per-area
+    composite maps with coordinate-plotted markers and legend toggles.
+
+    The coordinate system, decoded and VERIFIED this session:
+      - DA_MapPiece_PL_{WL}_WP.json holds, PER GATE ID, a list of map
+        pieces with PiecePosition (world X/Y) and TexturePerPixel
+        (80 world units per pixel; pieces are 512x512 textures).
+        PiecePosition is the piece CENTER -- verified by containment:
+        every terminal with coordinates falls inside a center-anchored
+        rect of one of its own pieces (the corner hypothesis scattered
+        misses). Screen axes: +X right, +Y down -- verified against
+        the floor-map widget's canvas offsets (TOB south/high-Y sits
+        at the bottom, Plains3 north/low-Y at the top).
+      - DA_InGame's TerminalDatas carry a Coordinate per terminal:
+        122 of 192 are non-zero and plot directly. The SA_/WT_ prefix
+        question from the Gates section is ALSO answered by the
+        in-game legend: SA = Safe Area, WT = Warp Terminal.
+      - Piece textures live under Widget/MapTexture/FieldMap/
+        {WL}_{family}/T_MapPiece_{WL}_{location}{letter}.png, letter
+        a/b/c matching MapPieceDataDetails order (verified: every
+        area with exported textures matches its details count
+        exactly, 0 mismatches). Only SOME areas have textures in the
+        current export (7 of 72 in WL01 -- Forest2/Plains1/Plains3/
+        Town families); areas without them are still listed with
+        hasTextures:false rather than dropped.
+      - The floor OVERVIEW (T_FloorMap_WL01.png, 1024x1024) gets its
+        clickable area overlays from WBP_Map_FloorMap_WL01.json's
+        CanvasPanelSlot offsets -- the game's own layout, no world
+        math needed there.
+
+    HONEST LIMITS (stated in the view's legend, not hidden):
+      - Chests have NO coordinates anywhere in the export (confirmed
+        back in the Chests section) -- they attach to areas by the
+        location-fragment join and are shown as a per-area list, not
+        plotted points.
+      - Bosses, monster spawns, gathering materials, and mission
+        objectives have no exported coordinates either (spawn/gather
+        locators live in unexported level actors; socket tables carry
+        no positions -- checked DT_SocketPopTable_WL01's fields
+        directly). Their legend entries render disabled with that
+        explanation.
+      - Composite area maps could show pieces positioned wrong
+        relative to each other -- user-reported with real in-game
+        screenshots, TWICE (the first round wrongly suspected thin
+        piece-to-piece overlap alone). ROOT CAUSE FOUND AND FIXED:
+        MapPieceDataDetails' array order does NOT match alphabetical
+        piece-letter order (confirmed directly -- one area's array is
+        [c, a, b], not [a, b, c]; ALL 7 currently-textured areas turned
+        out to have non-alphabetical order). This function used to
+        construct each piece's filename from its ARRAY INDEX
+        (`chr(ord("a")+i)`), silently pairing every position with the
+        WRONG texture whenever an area's array wasn't alphabetical --
+        now fixed to read each entry's own PieceTexture field directly.
+        Genuine thin piece-to-piece overlap (see _piece_overlap_quality)
+        is a SEPARATE, real property of some areas' authored layout
+        (as little as ~10% overlap between two pieces) -- seamRisk/
+        minPieceOverlapFraction/isolatedPieceCount are still computed
+        and exposed for that. A later asset export also added real
+        PieceMaskMaterial data (previously empty for every area
+        checked) resolved to its actual mask PNG via
+        _resolve_piece_mask_image and applied client-side as a CSS
+        luminance mask -- see that helper's docstring for exactly what
+        the mask encodes and the honest limits of reproducing it
+        without the shader graph.
+    """
+    ig = load_json(os.path.join(SRC, "DataAssets/Games/InGame/DA_InGame.json"))[0]["Properties"]
+    term_coords = {}
+    for w in ig.get("WorldDatas", []):
+        for t in w.get("TerminalDatas", []):
+            c = t.get("Coordinate", {})
+            if any(abs(c.get(k, 0)) > 0.01 for k in ("X", "Y")):
+                term_coords[t["ID"]] = {"x": c["X"], "y": c["Y"]}
+
+    chest_ids_by_location = {}
+    for cid, chest in (all_chests or {}).items():
+        if chest.get("location"):
+            chest_ids_by_location.setdefault(chest["location"], []).append(cid)
+
+    PIECE_PX = 512
+    areas = []
+    worlds_seen = []
+    for piece_file in sorted(glob.glob(os.path.join(SRC, "DataAssets/WorldAdmin/MapPiece/DA_MapPiece_PL_*_WP.json"))):
+        world = os.path.basename(piece_file).split("_")[3]  # WL01 / WL02
+        worlds_seen.append(world)
+        data = load_json(piece_file)[0]["Properties"]["MapPieceData"]
+        for entry in data:
+            gate_id = entry["Key"]
+            location = gate_id.split("_", 1)[1] if "_" in gate_id else gate_id
+            family = location.split("_")[0]
+            tpp = entry["Value"].get("TexturePerPixel", 80.0)
+            details = entry["Value"].get("MapPieceDataDetails", [])
+            pieces = []
+            for i, det in enumerate(details):
+                # BUG FOUND AND FIXED this session: MapPieceDataDetails'
+                # array order does NOT match alphabetical piece-letter
+                # order (confirmed directly -- SA_Plains1_1_01's array is
+                # [c, a, b], not [a, b, c]). The original code assigned
+                # letters purely by array INDEX and constructed a
+                # filename from that guess, which silently paired each
+                # PiecePosition with the WRONG texture whenever a gate's
+                # array wasn't already alphabetical -- the real cause of
+                # the "pieces positioned wrong relative to each other"
+                # visual bug a user reported with reference screenshots.
+                # Fixed to read the REAL filename directly from the
+                # entry's own PieceTexture.AssetPathName instead of
+                # reconstructing it from position.
+                tex_path = (det.get("PieceTexture") or {}).get("AssetPathName", "")
+                if not tex_path:
+                    continue
+                tex_name = tex_path.split("/")[-1].split(".")[0]  # e.g. T_MapPiece_WL01_Plains1_1_01c
+                rel = f"Widget/MapTexture/FieldMap/{world}_{family}/{tex_name}.png"
+                if not os.path.exists(os.path.join(SRC, rel)):
+                    continue
+                p = det.get("PiecePosition", {})
+                mask_image = _resolve_piece_mask_image(
+                    (det.get("PieceMaskMaterial") or {}).get("AssetPathName", "")
+                )
+                pieces.append({
+                    "image": f"Content/ROD/{rel}",
+                    "maskImage": mask_image,
+                    "centerX": p.get("X", 0.0),
+                    "centerY": p.get("Y", 0.0),
+                    "px": PIECE_PX,
+                })
+            half = PIECE_PX * tpp / 2.0
+            bounds = None
+            if pieces:
+                bounds = {
+                    "minX": min(p["centerX"] for p in pieces) - half,
+                    "minY": min(p["centerY"] for p in pieces) - half,
+                    "maxX": max(p["centerX"] for p in pieces) + half,
+                    "maxY": max(p["centerY"] for p in pieces) + half,
+                }
+            # Markers: every terminal whose coordinates fall inside this
+            # area's composite bounds (neighbors visible on the same
+            # composite plot too -- that's how the in-game map behaves).
+            markers = []
+            if bounds:
+                for tid, c in term_coords.items():
+                    if bounds["minX"] <= c["x"] <= bounds["maxX"] and bounds["minY"] <= c["y"] <= bounds["maxY"]:
+                        markers.append({
+                            "id": tid,
+                            "kind": "SA" if tid.startswith("SA_") else ("WT" if tid.startswith("WT_") else "other"),
+                            "x": c["x"], "y": c["y"],
+                        })
+            seam = _piece_overlap_quality(pieces, PIECE_PX * tpp)
+            areas.append({
+                "gateId": gate_id,
+                "location": location,
+                "family": family,
+                "world": world,
+                "texturePerPixel": tpp,
+                "pieces": pieces,
+                "hasTextures": bool(pieces),
+                "bounds": bounds,
+                "markers": sorted(markers, key=lambda m: m["id"]),
+                "chestIds": sorted(chest_ids_by_location.get(location, [])),
+                "hasOwnCoordinate": gate_id in term_coords,
+                "seamRisk": seam["seamRisk"],
+                "minPieceOverlapFraction": seam["minOverlapFraction"],
+                "isolatedPieceCount": seam["isolatedPieceCount"],
+            })
+
+    # Floor overview overlays from the game's own widget layout
+    floor = None
+    wbp_path = os.path.join(SRC, "Widget/Cockpit/Minimap/WBP_Map_FloorMap_WL01.json")
+    floor_img_rel = "Widget/MapTexture/FloorMap/T_FloorMap_WL01.png"
+    if os.path.exists(wbp_path) and os.path.exists(os.path.join(SRC, floor_img_rel)):
+        wbp = load_json(wbp_path)
+        images = {o.get("Name"): o for o in wbp if o.get("Type") == "Image"}
+        overlays = []
+        for o in wbp:
+            if o.get("Type") != "CanvasPanelSlot":
+                continue
+            props = o.get("Properties", {})
+            content = ((props.get("Content") or {}).get("ObjectName") or "").split(".")[-1].rstrip("'")
+            img_obj = images.get(content)
+            if not img_obj or content in ("HeroIcon",):
+                continue
+            brush = (img_obj.get("Properties") or {}).get("Brush", {})
+            res = (brush.get("ResourceObject") or {}).get("ObjectPath", "")
+            if "FloorMapPiece" not in res and "FloorMap/WL01" not in res and content != "WL01_Floor":
+                if content == "FloorMap":
+                    continue
+            tex_rel = None
+            if res.startswith("/Game/ROD/"):
+                tex_rel = "Content/ROD/" + res[len("/Game/ROD/"):].split(".")[0] + ".png"
+            ld = props.get("LayoutData", {})
+            off = ld.get("Offsets", {})
+            size = brush.get("ImageSize", {})
+            if content == "WL01_Floor" or not tex_rel:
+                continue
+            overlays.append({
+                "name": content,
+                "image": tex_rel,
+                "left": off.get("Left", 0.0),
+                "top": off.get("Top", 0.0),
+                "width": size.get("X", 0.0),
+                "height": size.get("Y", 0.0),
+            })
+        floor = {
+            "world": "WL01",
+            "image": f"Content/ROD/{floor_img_rel}",
+            "size": 1024,
+            # Slots anchor at canvas center (0.5, 0.5) -- offsets are
+            # relative to the 1024x1024 canvas center, verified in the
+            # WBP: the FloorMap root panel spans Right/Bottom 1024.
+            "anchorCenter": True,
+            "overlays": overlays,
+        }
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/WorldMap")
+
+    # Real, recolored map icons (see build_map_icons -- the game's own
+    # icon sprites are unrecolored red/green mask layers; this points
+    # at the pipeline's own recolored output instead of the raw ones).
+    icon_keys = ["safeArea", "warpTerminal", "treasureChest", "waypoint", "ark", "seal",
+                 "magicalSeal", "sideQuestTrinket", "townSmithy", "townChest", "townItemSeller",
+                 "boss", "monsterSpawn", "material", "missionObjective"]
+    icons = {}
+    for key in icon_keys:
+        candidate = os.path.join(OUT, "DataAssets/_MapIcons", f"{key}.png")
+        if os.path.exists(candidate):
+            icons[key] = f"Content/ROD/DataAssets/_MapIcons/{key}.png"
+
+    # Multi-area "World View" composite (the user's request: "chunks
+    # lined up together like the big map but made of the chunks"),
+    # answerable because every piece already carries real, absolute
+    # world-space coordinates -- plotting ALL textured areas' pieces
+    # on ONE shared canvas at the same 80-unit/pixel scale needs no
+    # new data, just wider bounds than any single area's own. Built
+    # per world (WL01, WL02, ...) since different worlds' coordinate
+    # spaces aren't guaranteed comparable.
+    world_composites = {}
+    for world_code in sorted(set(a["world"] for a in areas)):
+        world_pieces = []
+        for a in areas:
+            if a["world"] != world_code or not a["hasTextures"]:
+                continue
+            for p in a["pieces"]:
+                world_pieces.append({**p, "sourceGateId": a["gateId"]})
+        if not world_pieces:
+            continue
+        tpp0 = next(a["texturePerPixel"] for a in areas if a["world"] == world_code and a["hasTextures"])
+        half0 = PIECE_PX * tpp0 / 2.0
+        wminX = min(p["centerX"] for p in world_pieces) - half0
+        wminY = min(p["centerY"] for p in world_pieces) - half0
+        wmaxX = max(p["centerX"] for p in world_pieces) + half0
+        wmaxY = max(p["centerY"] for p in world_pieces) + half0
+        world_markers = [
+            {"id": tid, "kind": "SA" if tid.startswith("SA_") else ("WT" if tid.startswith("WT_") else "other"), "x": c["x"], "y": c["y"]}
+            for tid, c in term_coords.items()
+            if wminX <= c["x"] <= wmaxX and wminY <= c["y"] <= wmaxY
+        ]
+        world_composites[world_code] = {
+            "world": world_code,
+            "texturePerPixel": tpp0,
+            "pieces": world_pieces,
+            "bounds": {"minX": wminX, "minY": wminY, "maxX": wmaxX, "maxY": wmaxY},
+            "markers": sorted(world_markers, key=lambda m: m["id"]),
+            "areaCount": len(set(p["sourceGateId"] for p in world_pieces)),
+        }
+
+    save_json(os.path.join(out_dir, "WorldMap.json"), {
+        "floor": floor, "areas": areas, "icons": icons, "worldComposites": world_composites,
+    })
+    with_tex = sum(1 for a in areas if a["hasTextures"])
+    total_markers = sum(len(a["markers"]) for a in areas)
+    textured_areas = [a for a in areas if a["hasTextures"]]
+    seam_high = sum(1 for a in textured_areas if a["seamRisk"] == "high")
+    seam_medium = sum(1 for a in textured_areas if a["seamRisk"] == "medium")
+    seam_low = sum(1 for a in textured_areas if a["seamRisk"] in ("low", "none"))
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "worlds": sorted(set(worlds_seen)),
+        "areaCount": len(areas),
+        "areasWithTextures": with_tex,
+        "terminalCoordinates": len(term_coords),
+        "markerPlacements": total_markers,
+        "floorOverlayCount": len((floor or {}).get("overlays", [])),
+        "chestsAttachedByLocation": sum(len(a["chestIds"]) for a in areas),
+        "coordinateLayers": ["SA (Safe Areas)", "WT (Warp Terminals)"],
+        "noCoordinateLayers": ["Chests (location join only)", "Bosses", "Monster spawns", "Materials", "Mission objectives"],
+        "seamRiskCounts": {"low": seam_low, "medium": seam_medium, "high": seam_high},
+        "seamRiskNote": (
+            "Piece placement itself is verified via terminal-containment testing (70/71 match) -- "
+            "seam risk reflects how much any two of an area's OWN pieces actually overlap by "
+            "authored position, not a placement error. Low overlap between specific pieces means "
+            "a visible gap or hard seam is likely without the game's own blend mask "
+            "(PieceMaskMaterial), which is empty in this export."
+        ),
+        "file": "DataAssets/Database/WorldMap/WorldMap.json",
+    })
+    print(f"  World map: {len(areas)} areas ({with_tex} with exported map textures), "
+          f"{len(term_coords)} terminals with coordinates, {total_markers} marker placements, "
+          f"{len((floor or {}).get('overlays', []))} floor overlays; chests attach by location join (no coordinates -- confirmed); "
+          f"seam risk across textured areas: {seam_low} low / {seam_medium} medium / {seam_high} high")
+    return {"areaCount": len(areas), "areasWithTextures": with_tex}
 
 
 def _parse_flag_string(flag_str):
@@ -2572,18 +5178,26 @@ def build_asset_meshes():
     return meshes
 
 
-def build_asset_inspector_index(all_materials, all_meshes):
+def build_asset_inspector_index(all_materials, all_meshes, all_skeletons, all_animations):
     """
-    Small combining step that runs after BOTH build_asset_materials()
-    and build_asset_meshes() -- writes the single _index.json the
-    frontend's coverage banner reads, rather than either builder
-    guessing at or partially writing the other's count.
+    Small combining step that runs after ALL asset builders -- writes
+    the single _index.json the frontend's coverage banner reads,
+    rather than any builder guessing at or partially writing another's
+    counts. Skeletons/Animations contribute their summary dicts
+    (counts, per-family/kind breakdowns, sidecar tallies, orphan
+    sidecar list) so the tabs and Data Coverage read one source.
     """
     save_json(os.path.join(OUT, "DataAssets/_AssetInspector/_index.json"), {
         "materialCount": len(all_materials),
         "materialInstanceCount": sum(1 for m in all_materials if m["assetType"] == "MaterialInstanceConstant"),
         "baseMaterialCount": sum(1 for m in all_materials if m["assetType"] == "Material"),
         "meshCount": len(all_meshes),
+        "skeletons": all_skeletons,
+        "animations": all_animations,
+        "files": {
+            "skeletons": "DataAssets/_AssetInspector/Skeletons.json",
+            "animations": "DataAssets/_AssetInspector/Animations.json",
+        },
     })
 
 
@@ -4140,7 +6754,19 @@ def build_dt_inspector_index():
     # WBP's own BackgroundBlur entry was being misclassified here as a
     # generic "DataAsset" with a misleading field summary, not flagged
     # as unrecognized the way Wwise events at least were.
-    excluded_dir_names = {"Localization", "WwiseAudio", "Widget"}
+    # ANM/CHR/ITM/Blueprints joined the exclusions when the big asset
+    # exports landed: this walk MIRRORS every classified json into OUT,
+    # and mirroring the asset trees would duplicate ~2 GB of asset
+    # metadata that is NOT datatables -- it's the Asset Inspector's
+    # domain (Skeletons/Animations catalogs + the download-file
+    # endpoint, which streams from raw-export directly, no mirror
+    # needed). Same reasoning as the existing Widget exclusion (its
+    # own builder), discovered the hard way: the first inspectors run
+    # after the merge filled the disk to 0 bytes mid-mirror and died,
+    # leaving a partial Content/ROD/ANM tree (2,664 of 5,600 files)
+    # that had to be deleted.
+    excluded_dir_names = {"Localization", "WwiseAudio", "Widget",
+                          "ANM", "CHR", "ITM", "Blueprints"}
     entries = []
     asset_path_cache = {}  # avoid re-stat'ing the same texture path repeatedly across files
 
@@ -4314,6 +6940,18 @@ PIPELINE_SECTIONS = [
         "expectedOutputs": ["DataAssets/Items/Textures/T_Item_U58.png", "Widget/Common/IconImage/SkillIconImages/SwordSkill/T_SwordSkill_WAX9.png"],
     },
     {
+        # Runs after "textures" (needs the raw icon sprites already
+        # readable from raw-export -- it reads directly from SRC, not
+        # from the textures section's copy, so ordering isn't a hard
+        # dependency, but keeping map icons visually adjacent to the
+        # general texture pass in the section list matches how they're
+        # used together in World > Map).
+        "key": "map_icons", "label": "World Map Icons (recolored)",
+        "builder": build_map_icons, "requires": [], "produces": None,
+        "rawInputs": ["Widget/3DMapCapture/MapIcon/IconImages/*.png"],
+        "expectedOutputs": ["DataAssets/_MapIcons/_index.json"],
+    },
+    {
         "key": "weapons", "label": "Weapons",
         "builder": build_weapons, "requires": [], "produces": "all_weapons",
         "rawInputs": ["DataAssets/Items/ItemDataAsset.json"],
@@ -4351,10 +6989,71 @@ PIPELINE_SECTIONS = [
         "expectedOutputs": ["DataAssets/Items/Recipes/Recipes.json", "DataAssets/Items/Recipes/_index.json"],
     },
     {
+        "key": "shops", "label": "Items > Shops",
+        "builder": build_shops, "requires": [], "produces": None,
+        "rawInputs": ["DataAssets/Games/DataTables/DT_ShopItemList.json", "DataAssets/Items/ItemDataAsset.json"],
+        "expectedOutputs": ["DataAssets/Database/Shops/Shops.json", "DataAssets/Database/Shops/_index.json"],
+    },
+    {
+        # Shares the pool resolver with Monsters > Drops (same
+        # requires, same reasoning: equipment slots resolve through the
+        # data's real ItemKey fields).
+        "key": "chests", "label": "Items > Chests",
+        "builder": build_chests, "requires": ["all_weapons", "all_armor"], "produces": "all_chests",
+        "rawInputs": ["DataAssets/WorldAdmin/DT_FixTBoxTable.json", "DataAssets/WorldAdmin/DT_ItemLotTable.json"],
+        "expectedOutputs": ["DataAssets/Database/Chests/Chests.json", "DataAssets/Database/Chests/_index.json"],
+    },
+    {
+        "key": "world_map", "label": "World > Map",
+        "builder": build_world_map, "requires": ["all_chests"], "produces": None,
+        "rawInputs": [
+            "DataAssets/WorldAdmin/MapPiece/DA_MapPiece_PL_*_WP.json",
+            "DataAssets/Games/InGame/DA_InGame.json",
+            "Widget/MapTexture/FieldMap/**/*.png",
+        ],
+        "expectedOutputs": ["DataAssets/Database/WorldMap/WorldMap.json", "DataAssets/Database/WorldMap/_index.json"],
+    },
+    {
+        "key": "static_maps", "label": "World > Map (Towns/Dungeons)",
+        "builder": build_static_maps, "requires": [], "produces": None,
+        "rawInputs": ["Widget/MapTexture/TownMap/*.png", "Widget/MapTexture/DungeonFloorMap/*.png"],
+        "expectedOutputs": ["DataAssets/Database/WorldMap/StaticMaps.json"],
+    },
+    {
         "key": "monsters", "label": "Monsters",
         "builder": build_monsters, "requires": [], "produces": "all_monsters",
         "rawInputs": ["DataAssets/Database/DT_MonsterDatabase.json"],
         "expectedOutputs": ["DataAssets/Database/Monsters/_index.json"],
+    },
+    {
+        "key": "monster_spawns", "label": "Monsters > Spawns",
+        "builder": build_monster_spawns, "requires": [], "produces": None,
+        "rawInputs": [
+            "DataAssets/WorldAdmin/WL01/DT_CharacterGroupTable_WL01.json",
+            "DataAssets/WorldAdmin/WL01/DT_CharacterGroupLotTable_WL01.json",
+            "DataAssets/WorldAdmin/WL01/DT_SocketPopTable_WL01.json",
+            "DataAssets/WorldAdmin/WL02/DT_CharacterGroupTable_WL02.json",
+            "DataAssets/WorldAdmin/WL02/DT_CharacterGroupLotTable_WL02.json",
+            "DataAssets/WorldAdmin/WL02/DT_SocketPopTable_WL02.json",
+        ],
+        "expectedOutputs": [
+            "DataAssets/Database/MonsterSpawns/Groups.json",
+            "DataAssets/Database/MonsterSpawns/Lots.json",
+            "DataAssets/Database/MonsterSpawns/Pops.json",
+            "DataAssets/Database/MonsterSpawns/_index.json",
+        ],
+    },
+    {
+        # Requires the SAME weapon/armor context Equipment is built
+        # from so drop item resolution uses the data's real ItemKey
+        # fields (no pattern guessing for equipment).
+        "key": "monster_drops", "label": "Monsters > Drops",
+        "builder": build_monster_drops, "requires": ["all_weapons", "all_armor"], "produces": "all_monster_drops",
+        "rawInputs": [
+            "DataAssets/WorldAdmin/DT_RewardLotTable.json",
+            "DataAssets/WorldAdmin/DT_ItemLotTable.json",
+        ],
+        "expectedOutputs": ["DataAssets/Database/MonsterDrops/Drops.json", "DataAssets/Database/MonsterDrops/_index.json"],
     },
     {
         "key": "lore", "label": "World > Lore",
@@ -4373,6 +7072,45 @@ PIPELINE_SECTIONS = [
         "builder": build_quests, "requires": [], "produces": "all_quests",
         "rawInputs": ["DataAssets/Quests/Main/QST_Main_*.json"],
         "expectedOutputs": ["DataAssets/Database/Quests/Quests.json", "DataAssets/Database/Quests/_index.json"],
+    },
+    {
+        # rawInputs lists only the HARD requirements. Maps/**/LV_*.json
+        # and DNG/**/LV_*.json are deliberately NOT listed even though
+        # build_areas scans them when present: they ship in separate
+        # Content-Maps.zip/Content-DNG.zip archives from the core
+        # Content.zip, and listing them here would make the dashboard's
+        # Export check report a Content.zip-only instance as broken when
+        # it isn't -- the builder itself treats them as a soft dependency
+        # (the Areas _index.json records levelScanAvailable so the app
+        # can distinguish "not scanned" from "none exist").
+        "key": "areas", "label": "World > Areas",
+        "builder": build_areas, "requires": [], "produces": "all_areas",
+        "rawInputs": ["DataAssets/Games/InGame/DA_InGame.json", "Localization/Game/en/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/Areas/Areas.json", "DataAssets/Database/Areas/_index.json"],
+    },
+    {
+        # DNG/**/LV_*.json is a soft dependency for the same reason
+        # Maps/DNG are for the areas section above -- it ships in
+        # Content-DNG.zip, so it's deliberately absent from rawInputs.
+        "key": "dungeons", "label": "World > Dungeons",
+        "builder": build_dungeons, "requires": ["all_areas"], "produces": "all_dungeons",
+        "rawInputs": ["DataAssets/Games/InGame/DA_InGame.json", "Localization/Game/en/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/Dungeons/Dungeons.json", "DataAssets/Database/Dungeons/_index.json"],
+    },
+    {
+        # The MapPiece files DO ship in the core Content.zip's
+        # DataAssets (unlike Maps/DNG), so they're listed as real raw
+        # inputs -- the builder still loads them defensively so their
+        # absence downgrades the map-piece cross-reference rather than
+        # failing the build.
+        "key": "gates", "label": "World > Gates",
+        "builder": build_gates, "requires": [], "produces": "all_gates",
+        "rawInputs": [
+            "DataAssets/Games/InGame/DA_InGame.json",
+            "DataAssets/WorldAdmin/MapPiece/DA_MapPiece_PL_WL01_WP.json",
+            "DataAssets/WorldAdmin/MapPiece/DA_MapPiece_PL_WL02_WP.json",
+        ],
+        "expectedOutputs": ["DataAssets/Database/Gates/Gates.json", "DataAssets/Database/Gates/_index.json"],
     },
     {
         "key": "characters", "label": "Characters / Partners",
@@ -4411,6 +7149,29 @@ PIPELINE_SECTIONS = [
             "DataAssets/Parameters/Hero/SwordSkillPointCurve.json",
         ],
         "expectedOutputs": ["DataAssets/Parameters/PlayerConfig.json"],
+    },
+    {
+        "key": "npcs", "label": "Characters > NPCs",
+        "builder": build_npcs, "requires": [], "produces": None,
+        "rawInputs": [
+            "DataAssets/Character/NPC/DataTable/DT_NPC_*.json",
+            "DataAssets/Character/NPC/Data/*/NPCData_*.json",
+            "DataAssets/Character/NPC/Parts/NPCParts_*.json",
+            "DataAssets/Character/NPC/Action/*/NPCAction_*.json",
+        ],
+        "expectedOutputs": ["DataAssets/Database/NPCs/NPCs.json", "DataAssets/Database/NPCs/_index.json"],
+    },
+    {
+        "key": "active_skills", "label": "Characters > Active Skills",
+        "builder": build_active_skills, "requires": [], "produces": None,
+        "rawInputs": ["DataAssets/Parameters/Hero/DT_ActiveSkillList.json"],
+        "expectedOutputs": ["DataAssets/Database/ActiveSkills/ActiveSkills.json", "DataAssets/Database/ActiveSkills/_index.json"],
+    },
+    {
+        "key": "ailments", "label": "Characters > Ailments",
+        "builder": build_ailments, "requires": [], "produces": "all_ailments",
+        "rawInputs": ["Localization/Game/en/Game.json", "Widget/Common/IconImage/StateIconImages/*.png"],
+        "expectedOutputs": ["DataAssets/Database/Ailments/Ailments.json", "DataAssets/Database/Ailments/_index.json"],
     },
     {
         "key": "weapon_armor_loc", "label": "Weapon/Armor Localization",
@@ -4466,6 +7227,48 @@ PIPELINE_SECTIONS = [
         "builder": build_quest_localization, "requires": ["all_quests"], "produces": None,
         "rawInputs": ["Localization/Game/*/Game.json"],
         "expectedOutputs": ["DataAssets/Database/Quests/Localization/_manifest.json"],
+    },
+    {
+        "key": "area_loc", "label": "Area Localization",
+        "builder": build_area_localization, "requires": ["all_areas"], "produces": None,
+        "rawInputs": ["Localization/Game/*/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/Areas/Localization/_manifest.json"],
+    },
+    {
+        "key": "dungeon_loc", "label": "Dungeon Localization",
+        "builder": build_dungeon_localization, "requires": ["all_dungeons"], "produces": None,
+        "rawInputs": ["Localization/Game/*/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/Dungeons/Localization/_manifest.json"],
+    },
+    {
+        "key": "gate_loc", "label": "Gate Localization",
+        "builder": build_gate_localization, "requires": ["all_gates"], "produces": None,
+        "rawInputs": ["Localization/Game/*/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/Gates/Localization/_manifest.json"],
+    },
+    {
+        "key": "monster_drop_loc", "label": "Monster Drop Localization",
+        "builder": build_monster_drop_localization, "requires": ["all_monster_drops"], "produces": None,
+        "rawInputs": ["Localization/Game/*/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/MonsterDrops/Localization/_manifest.json"],
+    },
+    {
+        "key": "monster_stats", "label": "Monsters > Stats (Levels/HP)",
+        "builder": build_monster_stats, "requires": [], "produces": "all_monster_stats",
+        "rawInputs": ["Blueprints/Characters/Enemies/**/BP_E*.json", "Blueprints/Characters/Enemies/**/Datas/CT_E*.json"],
+        "expectedOutputs": ["DataAssets/Database/MonsterStats/MonsterStats.json", "DataAssets/Database/MonsterStats/_index.json"],
+    },
+    {
+        "key": "ailment_loc", "label": "Ailment Localization",
+        "builder": build_ailment_localization, "requires": ["all_ailments"], "produces": None,
+        "rawInputs": ["Localization/Game/*/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/Ailments/Localization/_manifest.json"],
+    },
+    {
+        "key": "chest_loc", "label": "Chest Localization",
+        "builder": build_chest_localization, "requires": ["all_chests"], "produces": None,
+        "rawInputs": ["Localization/Game/*/Game.json"],
+        "expectedOutputs": ["DataAssets/Database/Chests/Localization/_manifest.json"],
     },
     {
         "key": "character_loc", "label": "Character Localization",
@@ -4547,8 +7350,23 @@ PIPELINE_SECTIONS = [
         "expectedOutputs": ["DataAssets/_AssetInspector/Meshes.json"],
     },
     {
+        # The CHR/ folder's section at last (deferred per the roadmap
+        # reshuffle until the asset exports landed). ITM/ is included
+        # -- shield/weapon skeletal meshes live there.
+        "key": "asset_skeletons", "label": "Asset Inspector (Skeletons)",
+        "builder": build_asset_skeletons, "requires": [], "produces": "all_skeletons",
+        "rawInputs": ["CHR/**/SK_*.json"],
+        "expectedOutputs": ["DataAssets/_AssetInspector/Skeletons.json"],
+    },
+    {
+        "key": "asset_animations", "label": "Asset Inspector (Animations)",
+        "builder": build_asset_animations, "requires": [], "produces": "all_animations",
+        "rawInputs": ["ANM/**/*.json"],
+        "expectedOutputs": ["DataAssets/_AssetInspector/Animations.json"],
+    },
+    {
         "key": "asset_inspector_index", "label": "Asset Inspector Index",
-        "builder": build_asset_inspector_index, "requires": ["all_materials", "all_meshes"], "produces": None,
+        "builder": build_asset_inspector_index, "requires": ["all_materials", "all_meshes", "all_skeletons", "all_animations"], "produces": None,
         "rawInputs": [],
         "expectedOutputs": ["DataAssets/_AssetInspector/_index.json"],
     },
@@ -4558,7 +7376,126 @@ PIPELINE_SECTIONS = [
         "rawInputs": ["WwiseAudio/Events/**/*.json"],
         "expectedOutputs": ["DataAssets/_WwiseAudio/_index.json", "DataAssets/_WwiseAudio/events.json"],
     },
+    {
+        # User-content storage init -- the ONLY section whose outputs
+        # live at the project root (note the "//" prefix convention in
+        # expectedOutputs). Create-only: safe to re-run forever.
+        "key": "guides_init", "label": "Modding Guides Init",
+        "builder": build_guides_init, "requires": [], "produces": None,
+        "rawInputs": [],
+        "expectedOutputs": ["//guides/manifest.json", "//guides/getting-started-installing-unreal-engine.md"],
+    },
 ]
+
+
+# ----------------------------------------------------------------------
+# Focus builds
+#
+# The pipeline grew to 44 sections, and a full run (which now includes
+# the Maps/DNG level scans and the full DT/BP/Asset/Wwise walks) takes
+# minutes, not seconds -- long enough that the Build Dashboard's
+# original run-to-completion-in-one-HTTP-request rebuild endpoint
+# started timing out (a real 504 from a real deployment). Focus builds
+# keep the single full run as-is, and add named bundles of related
+# sections so day-to-day work rebuilds ONLY what's being worked on.
+#
+# "Retaining previous calculations" falls out of how the pipeline has
+# always worked: every section writes its own output files and never
+# deletes a sibling's, so running a subset leaves everything else on
+# disk exactly as the last build left it. What focus builds ADD is
+# dependency resolution: a selection is transitively expanded so that
+# any section whose `requires` names a context value gets its producer
+# section included automatically (e.g. selecting `monster_drops` pulls
+# in `weapons` + `armor`, selecting `dungeon_loc` pulls in `dungeons`
+# which pulls in `areas`). This also upgrades --only=<key>: it used to
+# fail outright on any section with requires (a documented limitation
+# since the Build Dashboard was built); it now auto-includes the
+# prerequisites and PRINTS what it added, so nothing happens silently.
+# ----------------------------------------------------------------------
+
+FOCUS_GROUPS = {
+    # name -> {label, sections} -- sections may be listed in any order;
+    # execution always follows PIPELINE_SECTIONS order after expansion.
+    "world": {
+        "label": "World (Lore/Towns/Quests/Areas/Dungeons/Gates)",
+        "sections": ["lore", "towns", "quests", "areas", "dungeons", "gates", "map_icons", "world_map", "static_maps",
+                     "lore_loc", "town_loc", "quest_loc", "area_loc", "dungeon_loc", "gate_loc"],
+    },
+    "monsters": {
+        "label": "Monsters (database/Spawns/Drops/Stats)",
+        "sections": ["monsters", "monster_spawns", "monster_drops",
+                     "monster_loc", "monster_drop_loc", "monster_stats"],
+    },
+    "items": {
+        "label": "Items (Catalog/Recipes)",
+        "sections": ["items", "recipes", "shops", "chests", "item_loc", "recipe_loc", "chest_loc"],
+    },
+    "equipment": {
+        "label": "Equipment (Weapons/Armor/Sword Skills/MODs)",
+        "sections": ["weapons", "armor", "sword_skills",
+                     "weapon_armor_loc", "sword_skill_loc",
+                     "peculiar_mods", "ex_mod_pool", "mod_coverage", "mod_loc", "ex_mod_loc"],
+    },
+    "characters": {
+        "label": "Characters (Partners/Customization/Player)",
+        "sections": ["characters", "partner_stats", "avatar_customize", "player_config",
+                     "npcs", "active_skills", "ailments",
+                     "character_loc", "partner_skill_loc", "ailment_loc"],
+    },
+    "inspectors": {
+        "label": "Inspectors (DT/BP/Asset)",
+        "sections": ["dt_inspector", "bp_inspector",
+                     "asset_materials", "asset_meshes", "asset_skeletons", "asset_animations",
+                     "asset_inspector_index"],
+    },
+    "audio": {
+        "label": "Wwise Audio",
+        "sections": ["wwise_audio"],
+    },
+    "textures": {
+        "label": "Textures & Icons",
+        "sections": ["textures", "map_icons"],
+    },
+    "guides": {
+        "label": "Modding Guides Init (folders + starter files)",
+        "sections": ["guides_init"],
+    },
+}
+
+
+def resolve_selection(target_keys):
+    """
+    Expands a set of section keys with their transitive prerequisite
+    PRODUCER sections (via the requires/produces graph), returning
+    (ordered_keys, added_keys) where ordered_keys follows
+    PIPELINE_SECTIONS order and added_keys is what dependency
+    resolution pulled in beyond the request -- callers print it so
+    auto-inclusion is never silent. Unknown keys raise with the full
+    valid list, same fail-loudly stance as the rest of the runner.
+    """
+    by_key = {s["key"]: s for s in PIPELINE_SECTIONS}
+    producer_of = {s["produces"]: s["key"] for s in PIPELINE_SECTIONS if s["produces"]}
+    unknown = [k for k in target_keys if k not in by_key]
+    if unknown:
+        raise ValueError(f"Unknown section key(s) {unknown}; valid keys: {sorted(by_key)}")
+
+    selected = set()
+    stack = list(target_keys)
+    while stack:
+        key = stack.pop()
+        if key in selected:
+            continue
+        selected.add(key)
+        for req in by_key[key]["requires"]:
+            producer = producer_of.get(req)
+            if producer is None:
+                raise ValueError(f"Section '{key}' requires '{req}' but no section produces it")
+            if producer not in selected:
+                stack.append(producer)
+
+    ordered = [s["key"] for s in PIPELINE_SECTIONS if s["key"] in selected]
+    added = sorted(selected - set(target_keys))
+    return ordered, added
 
 
 class PipelineRunner:
@@ -4619,6 +7556,32 @@ class PipelineRunner:
                 raise  # a failed section means everything after it in this run is unreliable -- stop, don't silently continue on broken context
         return results
 
+    def run_selected(self, target_keys, verbose=True):
+        """
+        Runs an arbitrary (non-contiguous) selection of sections in
+        PIPELINE_SECTIONS order, after expanding it with transitive
+        prerequisite producers via resolve_selection(). This is what
+        backs --group=<name> and the dependency-resolving upgrade of
+        --only=<key>; unlike run()'s contiguous start/stop range,
+        nothing OUTSIDE the expanded selection executes, so a focus
+        build never wastes time on unrelated sections and never
+        touches their outputs on disk ("retain previous
+        calculations").
+        """
+        ordered, added = resolve_selection(target_keys)
+        if verbose and added:
+            print(f"Auto-including prerequisite section(s): {', '.join(added)}")
+        by_key = {s["key"]: s for s in self.sections}
+        selected_sections = [by_key[k] for k in ordered]
+        sub_runner = PipelineRunner(sections=selected_sections)
+        sub_runner.context = self.context
+        try:
+            return sub_runner.run(verbose=verbose)
+        finally:
+            # surface the sub-run's progress for main()'s failure
+            # tracking, exactly like run() does on self
+            self.last_results = sub_runner.last_results
+
 
 def _check_raw_inputs_exist(raw_inputs):
     """
@@ -4658,8 +7621,16 @@ def _check_outputs_exist(expected_outputs):
     """
     results = []
     for rel_path in expected_outputs:
-        full_path = os.path.join(OUT, rel_path)
-        results.append({"path": rel_path, "present": os.path.exists(full_path)})
+        # A "//"-prefixed entry is PROJECT-ROOT-relative rather than
+        # Content/ROD-relative -- added for the guides_init section,
+        # whose outputs (guides/, uploads/) are user-content folders
+        # that deliberately live OUTSIDE the game-data tree.
+        if rel_path.startswith("//"):
+            full_path = os.path.join(PROJECT_ROOT, rel_path[2:])
+            results.append({"path": rel_path[2:], "present": os.path.exists(full_path)})
+        else:
+            full_path = os.path.join(OUT, rel_path)
+            results.append({"path": rel_path, "present": os.path.exists(full_path)})
     return results
 
 
@@ -4864,7 +7835,14 @@ def get_pipeline_status():
         },
     }
 
-    return {"sections": sections_report, "overview": overview}
+    # Focus groups are exposed here so the Build Dashboard renders its
+    # focus-build buttons from the SAME registry the CLI runs -- the
+    # introspect-don't-duplicate principle the dashboard was built on.
+    groups_report = {}
+    for name, g in FOCUS_GROUPS.items():
+        ordered, added = resolve_selection(g["sections"])
+        groups_report[name] = {"label": g["label"], "sections": ordered, "autoIncluded": added}
+    return {"sections": sections_report, "overview": overview, "groups": groups_report}
 
 
 def ensure_standalone_files_exist():
@@ -4947,18 +7925,51 @@ def main():
     import sys
     only_key = None
     from_key = None
+    group_key = None
     status_mode = False
     for arg in sys.argv[1:]:
         if arg.startswith("--only="):
             only_key = arg.split("=", 1)[1]
         elif arg.startswith("--from="):
             from_key = arg.split("=", 1)[1]
+        elif arg.startswith("--group="):
+            group_key = arg.split("=", 1)[1]
         elif arg == "--status":
             status_mode = True
+        elif arg == "--status-cached":
+            status_mode = "cached"
 
     if status_mode:
         import io
         import contextlib
+        import datetime
+
+        if status_mode == "cached":
+            if os.path.exists(LAST_PIPELINE_STATUS_PATH):
+                # Serve the last computed report instantly -- it carries
+                # generatedAt + cached:true so the dashboard can say WHEN
+                # these checks were real rather than implying they're live.
+                report = load_json(LAST_PIPELINE_STATUS_PATH)
+                report["cached"] = True
+                print(json.dumps(report))
+                return
+            # No cache yet (first load on a fresh instance): return an
+            # instant, honest "no checks computed yet" report rather
+            # than silently falling into the minutes-long fresh compute
+            # -- which is exactly the slow path that 500/504'd and that
+            # --status-cached exists to avoid. Focus groups are still
+            # included (resolve_selection is instant) so the dashboard's
+            # buttons work before the first check run.
+            groups_report = {}
+            for name, g in FOCUS_GROUPS.items():
+                ordered, added = resolve_selection(g["sections"])
+                groups_report[name] = {"label": g["label"], "sections": ordered, "autoIncluded": added}
+            print(json.dumps({
+                "sections": [], "overview": None, "groups": groups_report,
+                "cached": True, "neverComputed": True, "generatedAt": None,
+            }))
+            return
+
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured):
             report = get_pipeline_status()
@@ -4968,11 +7979,19 @@ def main():
         # stdout as JSON (confirmed this was happening before this fix:
         # every section's internal print() calls were interleaving with
         # the final json.dumps(), making the output unparseable).
+        report["generatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        report["cached"] = False
+        save_json(LAST_PIPELINE_STATUS_PATH, report)
         print(json.dumps(report))
         return
 
     runner = PipelineRunner()
-    if only_key:
+    if group_key:
+        if group_key not in FOCUS_GROUPS:
+            print(f"Unknown focus group '{group_key}'. Available: {', '.join(FOCUS_GROUPS)}")
+            sys.exit(2)
+        mode = f"group:{group_key}"
+    elif only_key:
         mode = f"only:{only_key}"
     elif from_key:
         mode = f"from:{from_key}"
@@ -4980,8 +7999,14 @@ def main():
         mode = "full"
 
     try:
-        if only_key:
-            runner.run(start_key=only_key, stop_key=only_key)
+        if group_key:
+            runner.run_selected(FOCUS_GROUPS[group_key]["sections"])
+        elif only_key:
+            # Dependency-resolving since focus builds were added: a
+            # section with `requires` auto-includes its producer(s),
+            # printed by run_selected -- previously this exact call
+            # failed outright on such sections (documented limitation).
+            runner.run_selected([only_key])
         elif from_key:
             runner.run(start_key=from_key)
         else:
