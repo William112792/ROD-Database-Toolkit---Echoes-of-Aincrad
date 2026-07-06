@@ -99,6 +99,7 @@ const DataStore = {
   partnerStats: {},        // { "IOM": { "1": {Defence,...}, ..., "200": {...} }, ... } -- only the 7 PARTNER_CODES, full table always loaded (not paginated) since the level slider needs random access
   avatarCustomize: null,   // { parts: {...}, colorPalettes: {...}, voices: [...], presets: [...] } -- NO localization file: confirmed no name field exists anywhere for any of this data
   playerConfig: null,      // { growPointsCumulativeByLevel, expRequiredByLevel, heroStatusCaps, growthParamCurves, ... } -- see PlayerConfig.json's own _confidence field for which parts are confirmed vs inferred
+  attributeModifications: null, // { Strength: [{triggerLevel, effects:[{type,value,label,unit,quantifiable}]}], ... } -- 7 growth stats' Bonus Modifier breakpoints from DA_AttributeModification
   abilityScoreTable: null, // { "1": {RankD:.., ...}, "31": {...}, "61": {...} }
   classTable: null,        // { RankD: {...}, ... }
   localization: {},        // { itemKey: { name, verified, source, description, descriptionVerified, descriptionSource } } -- for currentLanguage
@@ -454,7 +455,7 @@ const DataStore = {
       || this.partnerSkillLocalizationManifest[this.partnerSkillLocalizationManifest._defaultLanguage];
     this.partnerSkillLocalization = await fetchJSON(`${CONTENT_ROOT}/${skillLangMeta.file}`);
 
-    const [abilityScore, classTable, ambiguousPairs, peculiarMods, coverage, exModPool, devReference, animationConfig, dtInspectorIndex, wwiseAudioIndex, bpInspectorIndex, bpInspectorWidgets, assetInspectorIndex, assetMaterials, assetMeshes, playerConfig] =
+    const [abilityScore, classTable, ambiguousPairs, peculiarMods, coverage, exModPool, devReference, animationConfig, dtInspectorIndex, wwiseAudioIndex, bpInspectorIndex, bpInspectorWidgets, assetInspectorIndex, assetMaterials, assetMeshes, playerConfig, attributeModifications] =
       await Promise.all([
         fetchJSON(`${CONTENT_ROOT}/DataAssets/Parameters/AbilityScoreTable.json`),
         fetchJSON(`${CONTENT_ROOT}/DataAssets/Parameters/ClassTable.json`),
@@ -488,9 +489,12 @@ const DataStore = {
         fetchJSON(`${CONTENT_ROOT}/DataAssets/_AssetInspector/Meshes.json`),
         // ~8KB -- the Player tab's level/growth-point/stat-cap curves.
         fetchJSON(`${CONTENT_ROOT}/DataAssets/Parameters/PlayerConfig.json`),
+        // ~6KB -- the 7-stat Bonus Modifier breakpoints (DA_AttributeModification).
+        fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/AttributeModifications/AttributeModifications.json`),
       ]);
 
     this.playerConfig = playerConfig;
+    this.attributeModifications = attributeModifications;
 
     this.abilityScoreTable = abilityScore;
     this.classTable = classTable;
@@ -885,6 +889,44 @@ const DataStore = {
    */
   getItemSources(itemKey) {
     return this.itemSources[itemKey] || null;
+  },
+
+  /**
+   * Every Bonus Modifier breakpoint UNLOCKED at or below the given
+   * stat value (e.g. statValue=32 unlocks triggerLevel 5/10/20/30,
+   * not 40+) -- cumulative, matching how the source data itself
+   * reads ("at Vitality 30, ALSO gain..." stacks on top of the
+   * earlier breakpoints, it doesn't replace them).
+   */
+  getUnlockedBonusModifiers(statKey, statValue) {
+    const STAT_NAME = { STR: "Strength", DEX: "Dexterity", AGI: "Agility", INT: "Intelligence", VIT: "Vitality", END: "Endurance", MND: "Mind" };
+    const fullName = STAT_NAME[statKey] || statKey;
+    const breakpoints = (this.attributeModifications && this.attributeModifications[fullName]) || [];
+    return breakpoints.filter((b) => b.triggerLevel <= statValue);
+  },
+
+  /**
+   * Sums every QUANTIFIABLE effect (see ATTRIBUTE_MOD_EFFECT_INFO in
+   * build_pipeline.py) unlocked across ALL 7 stats at their current
+   * allocated values into flat/percent deltas per target stat --
+   * informational-only effect types (sword-skill damage buffs,
+   * dodge, economy, etc.) are deliberately excluded from this sum
+   * and left for the caller to display separately, never silently
+   * folded into a number they don't actually adjust.
+   */
+  getQuantifiableBonusModifierTotals(allocated) {
+    const totals = { MaxHealth: 0, MaxStamina: 0, MaxSoul: 0, ATK: 0, DEF: 0 };
+    for (const statKey of Object.keys(allocated)) {
+      const unlocked = this.getUnlockedBonusModifiers(statKey, allocated[statKey]);
+      for (const bp of unlocked) {
+        for (const effect of bp.effects) {
+          if (effect.quantifiable && totals[effect.quantifiable] !== undefined) {
+            totals[effect.quantifiable] += effect.value;
+          }
+        }
+      }
+    }
+    return totals;
   },
 
   /**

@@ -38,6 +38,10 @@ const CharactersBrowserView = {
       weaponProficiencyLevel: 0,
       openPicker: null, // null | "weapon" | "Upper" | "Lower" | "Glove" | "Shield"
       gearSearch: "",
+      exModPickers: [ // 4 EX-MOD slots, matching a weapon's real max of 4 -- for the "after modifiers" calculator only, separate from the standalone Weapons page's own 4-slot system
+        { type: null, tierIndex: 0 }, { type: null, tierIndex: 0 },
+        { type: null, tierIndex: 0 }, { type: null, tierIndex: 0 },
+      ],
     },
   },
 
@@ -712,6 +716,192 @@ const CharactersBrowserView = {
     this.renderPlayerGearPane();
   },
 
+  // EX-MOD types with an existing numeric home in this toolkit's
+  // Player builder (the other 21 EX-MOD types are real data with no
+  // such home -- offered in the picker for reference, but their value
+  // is shown as informational only, never summed into the After
+  // Modifiers total).
+  EX_MOD_QUANTIFIABLE: { BonusHealth: "MaxHealth", BonusStamina: "MaxStamina", BonusSP: "MaxSoul", BonusATK: "ATK", BonusDEF: "DEF" },
+
+  /**
+   * Combines THREE independently-sourced deltas on top of the
+   * existing (unchanged) baseline ATK/DEF/HP/Stamina/SP computation:
+   *   1. Quantifiable Bonus Modifiers unlocked by current stats
+   *      (DA_AttributeModification -- see data-loader.js).
+   *   2. The single EX-MOD picker's value, if its type has a
+   *      quantifiable target.
+   *   3. (Unique MODs are listed, not summed -- see renderAfterModifiersHtml.)
+   * Never mutates or replaces computePlayerVitals()/computePlayerCombat();
+   * this is a strictly additive, separate calculation exactly as
+   * requested -- the existing baseline numbers elsewhere in this tab
+   * are computed exactly as before.
+   */
+  computeAfterModifiersTotals() {
+    const player = this.state.player;
+    const vitals = this.computePlayerVitals();
+    const combat = this.computePlayerCombat();
+    const baseline = {
+      MaxHealth: vitals.MaxHealth, MaxStamina: vitals.MaxStamina, MaxSoul: vitals.MaxSoul,
+      ATK: combat.atkResult.total, DEF: combat.defTotal,
+    };
+    const bonusDelta = DataStore.getQuantifiableBonusModifierTotals ? DataStore.getQuantifiableBonusModifierTotals(player.allocated) : {};
+    const exModDelta = { MaxHealth: 0, MaxStamina: 0, MaxSoul: 0, ATK: 0, DEF: 0 };
+    for (const picker of player.exModPickers) {
+      if (!picker || !picker.type) continue;
+      const target = this.EX_MOD_QUANTIFIABLE[picker.type];
+      const exMod = DataStore.getExModByType(picker.type);
+      if (target && exMod && exMod.tiers[picker.tierIndex] != null) {
+        exModDelta[target] += exMod.tiers[picker.tierIndex];
+      }
+    }
+    const after = {};
+    for (const key of Object.keys(baseline)) {
+      after[key] = Math.round((baseline[key] + (bonusDelta[key] || 0) + exModDelta[key]) * 100) / 100;
+    }
+    return { baseline, bonusDelta, exModDelta, after };
+  },
+
+  /**
+   * The After Modifiers calculator itself -- deliberately placed
+   * under Weapon Proficiency, separate from the existing HP/Stamina/
+   * SP/ATK/DEF block above, per the request to add this "without
+   * changing the current process or representation of existing
+   * data". Shows baseline -> +Bonus Modifiers -> +EX-MOD -> After for
+   * every one of the 5 stats this toolkit already tracks, plus a
+   * plain list of equipped Unique MODs (weapon.modNames/armor.modNames)
+   * using the SAME renderModCalloutShared() the standalone Weapons/
+   * Armor pages use, so the wording can't drift between the two.
+   */
+  renderAfterModifiersHtml() {
+    const player = this.state.player;
+    const totals = this.computeAfterModifiersTotals();
+    const rows = [
+      { key: "MaxHealth", label: "Max HP" }, { key: "MaxStamina", label: "Max Stamina" },
+      { key: "MaxSoul", label: "Max SP" }, { key: "ATK", label: "ATK" }, { key: "DEF", label: "DEF" },
+    ];
+
+    const weapon = player.weaponItemKey ? DataStore.weaponsByItemKey[player.weaponItemKey] : null;
+    const uniqueModsHtml = [
+      ...(weapon?.modNames || []).map((m) => ({ name: m, from: "Weapon" })),
+      ...this.PLAYER_ARMOR_SLOTS.flatMap((slot) => {
+        const a = player.armor[slot] ? DataStore.armorByItemKey[player.armor[slot]] : null;
+        return (a?.modNames || []).map((m) => ({ name: m, from: slot }));
+      }),
+    ];
+
+    const exModOptions = DataStore.getDemoExModOptions ? DataStore.getDemoExModOptions() : [];
+    const exModPickerRowsHtml = player.exModPickers.map((picker, slotIndex) => {
+      const selectedExMod = picker.type ? exModOptions.find((m) => m.type === picker.type) : null;
+      return `
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+          <select class="filter-select" data-ex-slot="${slotIndex}" data-ex-role="type" style="flex:1;">
+            <option value="">EX-MOD ${slotIndex + 1}: None</option>
+            ${exModOptions.map((m) => `<option value="${m.type}" ${picker.type === m.type ? "selected" : ""}>${escapeHtml(m.label)}${this.EX_MOD_QUANTIFIABLE[m.type] ? "" : " (informational)"}</option>`).join("")}
+          </select>
+          ${selectedExMod ? `
+            <select class="filter-select" data-ex-slot="${slotIndex}" data-ex-role="tier" style="width:110px;">
+              ${selectedExMod.tiers.map((tierVal, i) => {
+                const realIndex = i + selectedExMod.tierIndexOffset;
+                return `<option value="${realIndex}" ${picker.tierIndex === realIndex ? "selected" : ""}>${formatExModValue(selectedExMod.format, tierVal)}</option>`;
+              }).join("")}
+            </select>
+          ` : ""}
+        </div>
+        ${picker.type && !this.EX_MOD_QUANTIFIABLE[picker.type] ? `
+          <div style="font-size:10px; color:var(--hud-text-dim); margin:-4px 0 6px;">
+            ${escapeHtml((DataStore.getExModByType(picker.type) || {}).label || picker.type)} is informational only — won't add to the table above.
+          </div>
+        ` : ""}
+      `;
+    }).join("");
+
+    return `
+      <div class="hud-panel" id="playerAfterModifiersPanel" style="margin-top:14px; padding:12px 14px;">
+        <h3 style="font-size:13px;">After Modifiers <span style="opacity:0.55; font-weight:400; font-size:10.5px;">(additive — doesn't change the totals above)</span></h3>
+        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:8px;">
+          Layers Bonus Modifiers (unlocked by your stats, above) and a chosen EX-MOD on top of
+          the existing baseline. This is a separate, additive calculation — nothing above this
+          section changes.
+        </div>
+        <table style="width:100%; border-collapse:collapse; margin-bottom:10px;">
+          <thead><tr style="border-bottom:1px solid var(--hud-border);">
+            <th style="text-align:left; font-size:10px; color:var(--hud-text-dim); padding:2px 4px;">Stat</th>
+            <th style="text-align:right; font-size:10px; color:var(--hud-text-dim); padding:2px 4px;">Baseline</th>
+            <th style="text-align:right; font-size:10px; color:var(--hud-text-dim); padding:2px 4px;">+Bonus Mod.</th>
+            <th style="text-align:right; font-size:10px; color:var(--hud-text-dim); padding:2px 4px;">+EX-MOD</th>
+            <th style="text-align:right; font-size:10px; color:var(--hud-hp); padding:2px 4px;">After</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map((r) => `
+              <tr>
+                <td style="font-size:11.5px; color:var(--hud-text); padding:2px 4px;">${r.label}</td>
+                <td style="text-align:right; font-size:11.5px; color:var(--hud-text-dim); padding:2px 4px;" id="afterModBase-${r.key}">${totals.baseline[r.key]}</td>
+                <td style="text-align:right; font-size:11.5px; color:var(--hud-text-dim); padding:2px 4px;" id="afterModBonus-${r.key}">${totals.bonusDelta[r.key] ? "+" + totals.bonusDelta[r.key] : "—"}</td>
+                <td style="text-align:right; font-size:11.5px; color:var(--hud-text-dim); padding:2px 4px;" id="afterModExMod-${r.key}">${totals.exModDelta[r.key] ? "+" + totals.exModDelta[r.key] : "—"}</td>
+                <td style="text-align:right; font-size:12px; font-weight:600; color:var(--hud-hp); padding:2px 4px;" id="afterModTotal-${r.key}">${totals.after[r.key]}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+
+        <div style="font-size:11px; font-weight:600; color:var(--hud-text); margin-bottom:4px;">EX-MOD Picker <span style="opacity:0.55; font-weight:400; font-size:10px;">(4 slots — matches a weapon's real max)</span></div>
+        ${exModPickerRowsHtml}
+
+        <div style="font-size:11px; font-weight:600; color:var(--hud-text); margin-bottom:4px;">Equipped Unique MODs</div>
+        ${uniqueModsHtml.length ? uniqueModsHtml.map((m) => `
+          <div style="font-size:10px; color:var(--hud-text-dim); margin-bottom:2px;">${escapeHtml(m.from)}:</div>
+          ${renderModCalloutShared(m.name, { showNumericVsDescriptionNote: true })}
+        `).join("") : `<div style="font-size:11px; color:var(--hud-text-dim);">No equipped item has a Unique MOD.</div>`}
+        <div style="font-size:10px; color:var(--hud-text-dim); margin-top:6px;">
+          Unique MODs are listed for reference, not summed into the table above — their effects
+          aren't all expressed as a plain numeric bonus this calculator can add.
+        </div>
+      </div>
+    `;
+  },
+
+  bindAfterModifiersEvents() {
+    document.querySelectorAll('[data-ex-role="type"]').forEach((sel) => {
+      sel.addEventListener("change", (e) => {
+        const slot = parseInt(e.target.dataset.exSlot, 10);
+        const picker = this.state.player.exModPickers[slot];
+        picker.type = e.target.value || null;
+        picker.tierIndex = 0;
+        if (e.target.value) {
+          const exMod = DataStore.getDemoExModOptions().find((m) => m.type === e.target.value);
+          if (exMod) picker.tierIndex = exMod.tierIndexOffset;
+        }
+        this.updatePlayerAfterModifiers();
+        // Tier options change with type -- needs a real re-render of
+        // just this small panel, not the whole stats pane.
+        const panel = document.getElementById("playerAfterModifiersPanel");
+        if (panel) { panel.outerHTML = this.renderAfterModifiersHtml(); this.bindAfterModifiersEvents(); }
+      });
+    });
+    document.querySelectorAll('[data-ex-role="tier"]').forEach((sel) => {
+      sel.addEventListener("change", (e) => {
+        const slot = parseInt(e.target.dataset.exSlot, 10);
+        this.state.player.exModPickers[slot].tierIndex = parseInt(e.target.value, 10);
+        this.updatePlayerAfterModifiers();
+      });
+    });
+  },
+
+  /** Live-patches just the After Modifiers table's numbers -- mirrors updatePlayerLiveValues()'s own patch-not-rerender pattern. */
+  updatePlayerAfterModifiers() {
+    const totals = this.computeAfterModifiersTotals();
+    for (const key of Object.keys(totals.after)) {
+      const base = document.getElementById(`afterModBase-${key}`);
+      if (base) base.textContent = totals.baseline[key];
+      const bonus = document.getElementById(`afterModBonus-${key}`);
+      if (bonus) bonus.textContent = totals.bonusDelta[key] ? "+" + totals.bonusDelta[key] : "—";
+      const exMod = document.getElementById(`afterModExMod-${key}`);
+      if (exMod) exMod.textContent = totals.exModDelta[key] ? "+" + totals.exModDelta[key] : "—";
+      const total = document.getElementById(`afterModTotal-${key}`);
+      if (total) total.textContent = totals.after[key];
+    }
+  },
+
   renderPlayerStatsPane() {
     const pane = document.getElementById("playerStatsPane");
     if (!pane) return;
@@ -770,17 +960,27 @@ const CharactersBrowserView = {
           <span class="gp-remaining ${remaining > 0 ? "positive" : "zero"}" id="playerGpRemaining">${remaining}/${this.getPlayerGrowPointsTotal()} unspent</span>
         </div>
 
+        <div style="display:flex; gap:6px; width:100%; margin-bottom:6px;">
+          <button class="toggle-btn" id="playerStatResetBtn" style="flex:1; font-size:11px;" title="Puts every stat back to 1 for reallocating, without touching level, gear, or proficiency">Stat Reset</button>
+          <button class="toggle-btn" id="playerFullResetBtn" style="flex:1; font-size:11px;" title="Clears the entire build back to defaults: level 1, all stats 1, no gear, 0 proficiency">Reset</button>
+        </div>
+
         <div class="player-stat-grid">
           ${this.PLAYER_ALLOCATABLE_STATS.map((stat) => `
             <div class="player-stat-row">
               <span class="player-stat-name">${stat}</span>
               <div class="player-stat-controls">
-                <button class="gp-stat-btn" data-stat="${stat}" data-delta="-1" ${player.allocated[stat] <= 1 ? "disabled" : ""}>−</button>
+                <button class="gp-stat-btn" data-stat="${stat}" data-delta="-100" ${player.allocated[stat] <= 1 ? "disabled" : ""} title="-100">−</button>
+                <button class="gp-stat-btn" data-stat="${stat}" data-delta="-10" ${player.allocated[stat] <= 1 ? "disabled" : ""} title="-10">−</button>
+                <button class="gp-stat-btn" data-stat="${stat}" data-delta="-1" ${player.allocated[stat] <= 1 ? "disabled" : ""} title="-1">−</button>
                 <span class="player-stat-value" id="playerStatVal-${stat}">${player.allocated[stat]}</span>
-                <button class="gp-stat-btn" data-stat="${stat}" data-delta="1" ${remaining <= 0 ? "disabled" : ""}>+</button>
+                <button class="gp-stat-btn" data-stat="${stat}" data-delta="1" ${remaining <= 0 ? "disabled" : ""} title="+1">+</button>
+                <button class="gp-stat-btn" data-stat="${stat}" data-delta="10" ${remaining <= 0 ? "disabled" : ""} title="+10">+</button>
+                <button class="gp-stat-btn" data-stat="${stat}" data-delta="100" ${remaining <= 0 ? "disabled" : ""} title="+100">+</button>
               </div>
             </div>
           `).join("")}
+
         </div>
 
         <div class="enhancement-slider-wrap" style="width:100%;">
@@ -798,6 +998,8 @@ const CharactersBrowserView = {
           </div>
           <input type="range" min="0" max="${(cfg?.weaponProficiencyThresholds?.length || 1) - 1}" step="1" value="${player.weaponProficiencyLevel}" id="playerProficiencySlider" />
         </div>
+
+        ${this.renderAfterModifiersHtml()}
       </div>
     `;
 
@@ -812,13 +1014,25 @@ const CharactersBrowserView = {
       this.state.player.weaponProficiencyLevel = parseInt(e.target.value, 10);
       const val = document.getElementById("playerProficiencyVal");
       if (val) val.textContent = this.state.player.weaponProficiencyLevel;
+      this.renderPlayerGearPane(); // Sword Skills' unlocked/locked split depends on this
     });
     pane.querySelectorAll(".gp-stat-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         this.adjustPlayerStat(btn.dataset.stat, parseInt(btn.dataset.delta, 10));
       });
     });
+    document.getElementById("playerStatResetBtn").addEventListener("click", () => {
+      if (confirm("Reset all stats back to 1? Level, gear, and proficiency stay as they are.")) {
+        this.resetPlayerStatsOnly();
+      }
+    });
+    document.getElementById("playerFullResetBtn").addEventListener("click", () => {
+      if (confirm("Reset the entire build (level, stats, gear, proficiency)? This can't be undone.")) {
+        this.resetPlayerBuild();
+      }
+    });
 
+    this.bindAfterModifiersEvents();
     this.updatePlayerLiveValues();
   },
 
@@ -836,6 +1050,7 @@ const CharactersBrowserView = {
     if (levelVal) levelVal.textContent = player.level;
     const levelSliderVal = document.getElementById("playerLevelSliderVal");
     if (levelSliderVal) levelSliderVal.textContent = player.level;
+    this.updatePlayerAfterModifiers(); // additive calculator tracks the same level/stat/gear changes as the baseline above it
 
     const vitals = this.computePlayerVitals();
     const hpVal = document.getElementById("playerHpVal");
@@ -872,9 +1087,11 @@ const CharactersBrowserView = {
       gpEl.textContent = `${remaining}/${total} unspent`;
       gpEl.className = `gp-remaining ${remaining > 0 ? "positive" : "zero"}`;
     }
-    // Disabled-state on +/- buttons needs a real re-render of just
-    // those buttons' attributes, not just text -- cheap, since it's
-    // only 14 small buttons, not the whole pane.
+    // Disabled-state on the six +/-1/10/100 buttons per stat needs a
+    // real re-render of just those buttons' attributes, not just text
+    // -- cheap, since it's only 42 small buttons, not the whole pane.
+    // The check only depends on delta's SIGN, not magnitude, so it
+    // generalizes to all six without a special case per size.
     document.querySelectorAll(".gp-stat-btn").forEach((btn) => {
       const stat = btn.dataset.stat;
       const delta = parseInt(btn.dataset.delta, 10);
@@ -885,10 +1102,150 @@ const CharactersBrowserView = {
 
   adjustPlayerStat(stat, delta) {
     const player = this.state.player;
-    if (delta > 0 && this.getPlayerGrowPointsRemaining() <= 0) return;
-    if (delta < 0 && player.allocated[stat] <= 1) return;
+    if (delta > 0) {
+      // Clamp to whatever Grow Points actually remain -- the existing
+      // +1 button only ever needed the simpler "block once remaining
+      // hits 0" check because 1 point can't overshoot by much, but a
+      // +10/+100 click at (say) 3 remaining must apply exactly 3, not
+      // either the full 10/100 (silent overspend) or nothing at all.
+      const remaining = this.getPlayerGrowPointsRemaining();
+      if (remaining <= 0) return;
+      delta = Math.min(delta, remaining);
+    } else if (delta < 0) {
+      // Symmetric clamp: don't drop below 1.
+      delta = Math.max(delta, 1 - player.allocated[stat]);
+      if (delta === 0) return;
+    }
     player.allocated[stat] = Math.max(1, player.allocated[stat] + delta);
     this.updatePlayerLiveValues();
+    this.renderPlayerGearPane(); // Bonus Modifiers panel can gain/lose unlocked rows as a stat crosses a breakpoint
+  },
+
+  /**
+   * "Stat Reset" -- the user's requested lighter reset: puts every
+   * allocated stat back to 1 (freeing all Grow Points for
+   * reallocation) WITHOUT touching level, gear, weapon enhancement,
+   * proficiency, or the after-modifiers picker -- for someone who
+   * wants to try a different point spread on the SAME build.
+   */
+  resetPlayerStatsOnly() {
+    const player = this.state.player;
+    for (const stat of this.PLAYER_ALLOCATABLE_STATS) player.allocated[stat] = 1;
+    this.updatePlayerLiveValues();
+    this.renderPlayerGearPane(); // Bonus Modifiers / Sword Skills panels depend on allocated stats
+  },
+
+  /**
+   * Full "Reset" -- clears the entire build back to its original
+   * defaults (level 1, all stats 1, no gear, no enhancement, 0
+   * proficiency, EX-MOD picker cleared) for starting over completely,
+   * distinct from Stat Reset's narrower stats-only clear.
+   */
+  resetPlayerBuild() {
+    this.state.player = {
+      name: this.state.player.name, // keep the name -- everything ELSE resets
+      level: 1,
+      allocated: { STR: 1, DEX: 1, AGI: 1, INT: 1, VIT: 1, END: 1, MND: 1 },
+      weaponCategory: null,
+      weaponItemKey: null,
+      weaponEnhancementTier: 0,
+      armor: { Upper: null, Lower: null, Glove: null, Shield: null },
+      weaponProficiencyLevel: 0,
+      openPicker: null,
+      gearSearch: "",
+      exModPickers: [
+        { type: null, tierIndex: 0 }, { type: null, tierIndex: 0 },
+        { type: null, tierIndex: 0 }, { type: null, tierIndex: 0 },
+      ],
+    };
+    this.renderActiveTab(); // clears + re-renders the Player tab cleanly (renderPlayerTab appends, doesn't replace)
+  },
+
+  /**
+   * Sword Skills unlocked by the CURRENTLY EQUIPPED weapon's category
+   * at the current Weapon Proficiency level -- each sword skill's own
+   * `weaponProficiency` field (confirmed: ranges 0-10 across all 67
+   * skills, directly comparable to the proficiency slider's value,
+   * NOT the separate/unrelated weaponProficiencyThresholds curve the
+   * slider's own label already flags as informational-only) says
+   * which tier unlocks it. Shown under Equipped Gear since it only
+   * makes sense in the context of whatever's equipped right now.
+   */
+  renderSwordSkillsForWeaponHtml() {
+    const player = this.state.player;
+    const weapon = player.weaponItemKey ? DataStore.weaponsByItemKey[player.weaponItemKey] : null;
+    if (!weapon) return "";
+    const category = weapon.category;
+    const skills = (DataStore.swordSkillsByCategory[category] || []).slice().sort((a, b) => a.weaponProficiency - b.weaponProficiency);
+    if (!skills.length) return "";
+    const unlocked = skills.filter((s) => s.weaponProficiency <= player.weaponProficiencyLevel);
+    const locked = skills.filter((s) => s.weaponProficiency > player.weaponProficiencyLevel);
+    return `
+      <div class="hud-panel" style="margin-top:12px;">
+        <h3 style="font-size:13px;">Sword Skills — ${escapeHtml(weapon.categoryLabel)}</h3>
+        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:8px;">
+          Unlocked at your current Weapon Proficiency (${player.weaponProficiencyLevel}) — each skill's own
+          proficiency requirement, confirmed directly on its data (0-10 across all 67 skills).
+        </div>
+        ${unlocked.map((s) => `
+          <div style="display:flex; align-items:center; gap:8px; padding:3px 0; font-size:12px; color:var(--hud-text);">
+            ${s.textures.icon ? `<img src="${s.textures.icon}" alt="" style="width:20px; height:20px; object-fit:contain;"/>` : '<span style="width:20px;"></span>'}
+            <span style="flex:1;">${escapeHtml(DataStore.getSwordSkillDisplayName ? DataStore.getSwordSkillDisplayName(s.id) : s.internalName)}</span>
+            <span style="font-size:10px; color:var(--hud-text-dim);">Prof. ${s.weaponProficiency}</span>
+          </div>
+        `).join("")}
+        ${locked.length ? `
+          <div style="font-size:10.5px; color:var(--hud-text-dim); margin-top:6px; padding-top:6px; border-top:1px solid var(--hud-border);">
+            ${locked.length} more locked until higher proficiency (next at ${locked[0].weaponProficiency}) — see Weapons › Sword Skills for the full list.
+          </div>
+        ` : ""}
+      </div>
+    `;
+  },
+
+  /**
+   * Bonus Modifiers (DA_AttributeModification's BonusModificationData)
+   * -- categorized by the 7 growth stats, showing every breakpoint
+   * UNLOCKED at the stat's current allocated value, live via the same
+   * updatePlayerLiveValues() path as everything else in this tab.
+   * Quantifiable effects (flat HP/Stamina/SP, ATK/DEF %) are tagged so
+   * the reader can see which ones feed the After Modifiers calculator
+   * below Weapon Proficiency; informational effects (sword-skill
+   * damage buffs, dodge, economy) are shown too, just not summed
+   * anywhere, since this toolkit has no existing numeric home for them.
+   */
+  renderBonusModifiersHtml() {
+    if (!DataStore.attributeModifications) return "";
+    const player = this.state.player;
+    const STAT_FULL = { STR: "Strength", DEX: "Dexterity", AGI: "Agility", INT: "Intelligence", VIT: "Vitality", END: "Endurance", MND: "Mind" };
+    const blocks = this.PLAYER_ALLOCATABLE_STATS.map((stat) => {
+      const unlocked = DataStore.getUnlockedBonusModifiers(stat, player.allocated[stat]);
+      if (!unlocked.length) return "";
+      const rows = unlocked.flatMap((bp) => bp.effects.map((e) => ({ ...e, triggerLevel: bp.triggerLevel })));
+      return `
+        <div style="margin-bottom:8px;">
+          <div style="font-family:var(--font-display); font-size:11px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:2px;">${stat} — ${escapeHtml(STAT_FULL[stat])} (${player.allocated[stat]})</div>
+          ${rows.map((e) => `
+            <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--hud-text); padding:1px 0 1px 8px;">
+              <span style="flex:1;">${escapeHtml(e.label)} <span style="opacity:0.5; font-size:10px;">(at ${e.triggerLevel})</span></span>
+              <span style="color:${e.quantifiable ? "var(--hud-hp)" : "var(--hud-text-dim)"};">${e.value > 0 ? "+" : ""}${e.value}${e.unit === "percent" ? "%" : ""}</span>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }).filter(Boolean);
+    return `
+      <div class="hud-panel" style="margin-top:12px;" id="playerBonusModifiersPanel">
+        <h3 style="font-size:13px;">Bonus Modifiers</h3>
+        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:8px;">
+          Real breakpoints from the game's own data (DA_AttributeModification) — unlock as each
+          stat rises. Values in <span style="color:var(--hud-hp);">this color</span> feed the
+          After Modifiers calculator under Weapon Proficiency; the rest are real effects with no
+          existing numeric total in this toolkit yet, shown for reference only.
+        </div>
+        ${blocks.length ? blocks.join("") : `<div style="font-size:11px; color:var(--hud-text-dim);">No bonus modifiers unlocked yet — raise a stat to see its first breakpoint.</div>`}
+      </div>
+    `;
   },
 
   renderPlayerGearPane() {
@@ -942,6 +1299,8 @@ const CharactersBrowserView = {
         ${weaponSlotHtml}
         ${armorSlotsHtml}
       </div>
+      ${this.renderSwordSkillsForWeaponHtml()}
+      ${this.renderBonusModifiersHtml()}
     `;
 
     pane.querySelectorAll(".player-gear-slot").forEach((row) => {

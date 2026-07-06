@@ -35,6 +35,7 @@ const BuildDashboardView = {
     statusCached: true,
     uploadResult: null,
     unknownFiles: [], // files from the last upload that didn't match any section's known rawInputs
+    csvExportTables: [], // DataTable catalog for the Export to CSV panel, from _DtInspector/_index.json
   },
 
   async render(container) {
@@ -58,6 +59,27 @@ const BuildDashboardView = {
       </div>
       <div id="buildUploadResult"></div>
 
+      <div class="hud-panel" style="margin-bottom:14px;">
+        <h3 style="font-size:13px;">Export to CSV <span style="opacity:0.55; font-weight:400; font-size:10.5px;">(for re-importing into Unreal Engine)</span></h3>
+        <p style="font-size:11.5px; color:var(--hud-text-dim); margin-top:0;">
+          Converts a raw exported JSON file into a CSV using UE's OWN DataTable convention —
+          nested struct fields become <code>(Key=Value,...)</code>, arrays become
+          <code>(Item1,Item2,...)</code> — so the result can be re-imported into the editor for
+          testing, rebuilding a reference table, or manual editing. Works best for real
+          DataTables (one column per field, one row per table row). DataAssets don't have a
+          native CSV import convention in UE, so those export as a single best-effort row —
+          offered anyway since it doesn't hurt to have it, but labeled as best-effort rather than
+          a guaranteed round-trip.
+        </p>
+        <input type="text" class="search-input" id="csvExportSearch" placeholder="Search DataTables by path (e.g. ItemLotTable)…" style="width:100%; margin-bottom:8px;"/>
+        <div id="csvExportList" style="max-height:220px; overflow-y:auto; margin-bottom:10px;"></div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input type="text" class="search-input" id="csvExportManualPath" placeholder="Or paste any raw-export path (DataTable or DataAsset)…" style="flex:1;"/>
+          <button class="toggle-btn" id="csvExportManualBtn">Check &amp; Export</button>
+        </div>
+        <div id="csvExportManualResult" style="font-size:11px; margin-top:6px;"></div>
+      </div>
+
       <div class="toolbar" style="margin-bottom:10px;">
         <button class="toggle-btn active" id="buildRefreshBtn">↻ Refresh Status</button>
         <button class="toggle-btn" id="buildRebuildAllBtn">Rebuild Full Pipeline</button>
@@ -73,6 +95,7 @@ const BuildDashboardView = {
     container.appendChild(wrap);
 
     this.wireUploadZone();
+    this.wireCsvExportPanel();
     document.getElementById("buildRefreshBtn").addEventListener("click", () => this.loadStatus());
     document.getElementById("buildRebuildAllBtn").addEventListener("click", () => this.triggerRebuild(null));
 
@@ -560,6 +583,81 @@ const BuildDashboardView = {
 
     finish();
     await this.loadStatus();
+  },
+
+  /**
+   * Lists every REAL DataTable this export contains (reusing the DT
+   * Inspector's own catalog -- Content/ROD/DataAssets/_DtInspector/
+   * _index.json, kind === "DataTable" -- never a guessed/fabricated
+   * list of table names), searchable by path, each with a direct
+   * Export CSV download link. A manual path field covers anything
+   * not in that catalog (including DataAssets, best-effort).
+   */
+  async wireCsvExportPanel() {
+    try {
+      const idx = await (await fetch(`${CONTENT_ROOT}/DataAssets/_DtInspector/_index.json`)).json();
+      this.state.csvExportTables = idx.filter((e) => e.kind === "DataTable").sort((a, b) => a.path.localeCompare(b.path));
+    } catch (e) {
+      this.state.csvExportTables = [];
+    }
+    this.renderCsvExportList("");
+
+    document.getElementById("csvExportSearch").addEventListener("input", (e) => {
+      this.renderCsvExportList(e.target.value);
+    });
+    document.getElementById("csvExportManualBtn").addEventListener("click", () => this.checkAndExportManualCsv());
+    document.getElementById("csvExportManualPath").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.checkAndExportManualCsv();
+    });
+  },
+
+  renderCsvExportList(query) {
+    const el = document.getElementById("csvExportList");
+    const tables = this.state.csvExportTables || [];
+    const q = query.trim().toLowerCase();
+    const filtered = q ? tables.filter((t) => t.path.toLowerCase().includes(q)) : tables;
+    if (!filtered.length) {
+      el.innerHTML = `<div style="font-size:11px; color:var(--hud-text-dim); padding:8px;">${tables.length ? "No DataTables match." : "DT Inspector catalog not built yet — run the Inspectors focus build first."}</div>`;
+      return;
+    }
+    const shown = filtered.slice(0, 150);
+    el.innerHTML = shown.map((t) => `
+      <div style="display:flex; align-items:center; gap:8px; padding:4px 6px; font-size:11.5px; border-bottom:1px solid rgba(135,200,210,0.08);">
+        <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--font-mono); color:var(--hud-text);" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</span>
+        <span style="color:var(--hud-text-dim); flex-shrink:0;">${t.rowCount != null ? t.rowCount + " rows" : ""}</span>
+        <a class="toggle-btn" style="flex-shrink:0; padding:2px 8px; font-size:10.5px; text-decoration:none;" href="/api/pipeline/export-csv?path=${encodeURIComponent(t.path)}" download>⬇ CSV</a>
+      </div>
+    `).join("");
+    if (filtered.length > shown.length) {
+      el.insertAdjacentHTML("beforeend", `<div style="font-size:10.5px; color:var(--hud-text-dim); padding:6px;">Showing ${shown.length} of ${filtered.length} — narrow your search for more.</div>`);
+    }
+  },
+
+  async checkAndExportManualCsv() {
+    const input = document.getElementById("csvExportManualPath");
+    const resultEl = document.getElementById("csvExportManualResult");
+    const rawPath = input.value.trim().replace(/^\/+/, "");
+    if (!rawPath) return;
+    resultEl.innerHTML = `<span style="color:var(--hud-text-dim);">Checking…</span>`;
+    try {
+      const res = await fetch(`/api/pipeline/export-csv-info?path=${encodeURIComponent(rawPath)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        resultEl.innerHTML = `<span style="color:var(--rank-a);">${escapeHtml(data.error || "Not found")}</span>`;
+        return;
+      }
+      if (data.kind === "unrecognized") {
+        resultEl.innerHTML = `<span style="color:var(--rank-a);">This file's shape isn't a DataTable or a recognizable DataAsset — can't export.</span>`;
+        return;
+      }
+      const kindLabel = data.kind === "datatable" ? `DataTable, ${data.rowCount} rows` : `DataAsset — best-effort single row, not a native UE import format`;
+      resultEl.innerHTML = `
+        <span style="color:var(--hud-hp);">${escapeHtml(kindLabel)}</span> —
+        <a class="toggle-btn" style="padding:2px 8px; font-size:10.5px; text-decoration:none;" href="/api/pipeline/export-csv?path=${encodeURIComponent(rawPath)}" download>⬇ Download CSV</a>
+      `;
+    } catch (e) {
+      resultEl.innerHTML = `<span style="color:var(--rank-a);">${escapeHtml(e.message)}</span>`;
+    }
   },
 
   wireUploadZone() {

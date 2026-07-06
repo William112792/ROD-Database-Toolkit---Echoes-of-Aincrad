@@ -5663,6 +5663,104 @@ def build_asset_inspector_index(all_materials, all_meshes, all_skeletons, all_an
     })
 
 
+# Human-friendly labels + a quantifiable/informational split for every
+# EModificationType found across DA_AttributeModification's
+# BonusModificationData (verified exhaustively -- 19 distinct types,
+# all accounted for below, none left to guess at render time).
+# "quantifiable" means it maps cleanly onto a stat this toolkit's
+# Player builder already computes (HP/Stamina/SP/ATK/DEF) and can be
+# folded into an additive "after modifiers" total; "informational"
+# means it's real data with no existing numeric home in this builder
+# (sword-skill damage buffs, dodge/sprint, economy) -- shown, not
+# silently dropped, but not summed into a total that would misrepresent
+# precision this toolkit doesn't actually have for those systems.
+ATTRIBUTE_MOD_EFFECT_INFO = {
+    "BonusHealth": {"label": "Bonus Max HP", "unit": "flat", "quantifiable": "MaxHealth"},
+    "BonusStamina": {"label": "Bonus Max Stamina", "unit": "flat", "quantifiable": "MaxStamina"},
+    "BonusSP": {"label": "Bonus Max SP", "unit": "flat", "quantifiable": "MaxSoul"},
+    "CoefATK": {"label": "ATK Coefficient", "unit": "percent", "quantifiable": "ATK"},
+    "CoefDEF": {"label": "DEF Coefficient", "unit": "percent", "quantifiable": "DEF"},
+    "CoefStamina": {"label": "Stamina Coefficient", "unit": "percent", "quantifiable": "MaxStamina"},
+    "CoefSP": {"label": "SP Coefficient", "unit": "percent", "quantifiable": "MaxSoul"},
+    "EnhHealCrystal": {"label": "Healing Crystal Enhancement", "unit": "percent", "quantifiable": None},
+    "EnhDown": {"label": "Down-Attack Enhancement", "unit": "percent", "quantifiable": None},
+    "EnhSlash": {"label": "Slash Damage Enhancement", "unit": "percent", "quantifiable": None},
+    "EnhSlashDmg": {"label": "Slash Damage Enhancement (Major)", "unit": "percent", "quantifiable": None},
+    "EnhSSDmg": {"label": "Sword Skill Damage Enhancement", "unit": "percent", "quantifiable": None},
+    "EnhAtkSpeed": {"label": "Attack Speed Enhancement", "unit": "percent", "quantifiable": None},
+    "EnhDodge": {"label": "Dodge Enhancement", "unit": "percent", "quantifiable": None},
+    "CoefCombatSprint": {"label": "Combat Sprint Speed Coefficient", "unit": "percent", "quantifiable": None},
+    "CoefCol": {"label": "Col Gain Coefficient", "unit": "percent", "quantifiable": None},
+    "CoefExp": {"label": "Experience Gain Coefficient", "unit": "percent", "quantifiable": None},
+    "CoefResist": {"label": "Resistance Coefficient", "unit": "percent", "quantifiable": None},
+    "EnhPouch": {"label": "Pouch Capacity Enhancement", "unit": "percent", "quantifiable": None},
+}
+
+
+def build_attribute_modifications():
+    """
+    Builds Content/ROD/DataAssets/Database/AttributeModifications/
+    AttributeModifications.json -- the per-stat "bonus modifier"
+    breakpoints from DA_AttributeModification.BonusModificationData:
+    as each of the 7 growth stats (Strength, Dexterity, Agility,
+    Intelligence, Vitality, Endurance, Mind -- the SAME 7 keys the
+    Player builder already tracks as STR/DEX/AGI/INT/VIT/END/MND)
+    reaches a trigger value, real named bonus effects unlock.
+
+    Verified directly against the raw asset before building anything:
+    all 19 distinct EModificationType values across every stat's
+    LevelData are accounted for in ATTRIBUTE_MOD_EFFECT_INFO above,
+    each given a human label and classified as either quantifiable
+    (maps onto MaxHealth/MaxStamina/MaxSoul/ATK/DEF, which this
+    toolkit's Player builder already computes) or informational (real
+    effects with no existing numeric home here -- shown, not summed).
+
+    HONEST LIMIT: TriggerLevel is compared against the STAT'S OWN
+    allocated value (e.g. "at Vitality 30, gain +100% Heal Crystal
+    effectiveness"), not player character level -- confirmed by the
+    data's own shape (each entry is keyed by a growth stat, not a
+    flat list). This is a natural reading of the source structure, not
+    independently confirmed against an in-game screenshot the way the
+    HP/Stamina/SP floor values were -- stated as such in the view.
+    """
+    d = load_json(os.path.join(SRC, "DataAssets/Parameters/Shared/DA_AttributeModification.json"))[0]["Properties"]
+    stats = {}
+    unknown_types = set()
+    for entry in d.get("BonusModificationData", []):
+        stat = strip_enum(entry["Key"]).replace("EGrowthType_", "")
+        breakpoints = []
+        for lv in entry["Value"].get("LevelData", []):
+            effects = []
+            for e in lv.get("Effects", []):
+                etype = strip_enum(e["Type"]).replace("EModificationType_", "")
+                info = ATTRIBUTE_MOD_EFFECT_INFO.get(etype)
+                if not info:
+                    unknown_types.add(etype)
+                effects.append({
+                    "type": etype,
+                    "value": e.get("Value"),
+                    "label": info["label"] if info else etype,
+                    "unit": info["unit"] if info else "unknown",
+                    "quantifiable": info["quantifiable"] if info else None,
+                })
+            breakpoints.append({"triggerLevel": lv.get("TriggerLevel"), "effects": effects})
+        breakpoints.sort(key=lambda b: b["triggerLevel"])
+        stats[stat] = breakpoints
+
+    out_dir = os.path.join(OUT, "DataAssets/Database/AttributeModifications")
+    save_json(os.path.join(out_dir, "AttributeModifications.json"), stats)
+    total_breakpoints = sum(len(v) for v in stats.values())
+    save_json(os.path.join(out_dir, "_index.json"), {
+        "statCount": len(stats),
+        "totalBreakpoints": total_breakpoints,
+        "unknownEffectTypes": sorted(unknown_types),
+        "file": "DataAssets/Database/AttributeModifications/AttributeModifications.json",
+    })
+    print(f"  Attribute modifications: {len(stats)} stats, {total_breakpoints} level breakpoints"
+          + (f" ({len(unknown_types)} unrecognized effect types: {sorted(unknown_types)})" if unknown_types else ""))
+    return stats
+
+
 def build_player_config():
     """
     Player section (Characters > Player) config -- the raw per-level/
@@ -7613,6 +7711,12 @@ PIPELINE_SECTIONS = [
         "expectedOutputs": ["DataAssets/Parameters/PlayerConfig.json"],
     },
     {
+        "key": "attribute_modifications", "label": "Player > Bonus Modifiers",
+        "builder": build_attribute_modifications, "requires": [], "produces": None,
+        "rawInputs": ["DataAssets/Parameters/Shared/DA_AttributeModification.json"],
+        "expectedOutputs": ["DataAssets/Database/AttributeModifications/AttributeModifications.json", "DataAssets/Database/AttributeModifications/_index.json"],
+    },
+    {
         "key": "npcs", "label": "Characters > NPCs",
         "builder": build_npcs, "requires": [], "produces": None,
         "rawInputs": [
@@ -7911,7 +8015,7 @@ FOCUS_GROUPS = {
     },
     "characters": {
         "label": "Characters (Partners/Customization/Player)",
-        "sections": ["characters", "partner_stats", "avatar_customize", "player_config",
+        "sections": ["characters", "partner_stats", "avatar_customize", "player_config", "attribute_modifications",
                      "npcs", "active_skills", "ailments",
                      "character_loc", "partner_skill_loc", "ailment_loc"],
     },

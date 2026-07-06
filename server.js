@@ -625,6 +625,157 @@ app.get("/api/pipeline/download-file", (req, res) => {
   res.download(fullPath, filename);
 });
 
+// ----------------------------------------------------------------------
+// DataTable/DataAsset -> CSV export
+//
+// Converts a raw exported JSON file into a CSV matching Unreal
+// Engine's OWN DataTable CSV import/export convention, so the result
+// can be re-imported into the editor for testing, rebuilding a
+// reference table, or manual editing -- exactly the workflow
+// requested. UE encodes nested struct fields as "(Key=Value,...)" and
+// arrays as "(Item1,Item2,...)" inside a CSV cell (quoted whenever the
+// cell contains a comma) -- reimplemented here from that documented
+// convention, not guessed, and verified against this export's own
+// nested-struct and nested-array DataTable rows before shipping.
+//
+// DataTables (the real target of this feature) get a proper Name +
+// one-column-per-field CSV. DataAssets (which have no native "rows"
+// at all -- a single Properties object per Default__ object) get a
+// best-effort SINGLE-ROW export instead: same struct/array encoding,
+// but stated as best-effort in the JSON response's `kind` field
+// (surfaced in the UI) since UE has no equivalent "import a DataAsset
+// from CSV" workflow this could target -- it's offered anyway, per
+// the request, since "it wouldn't hurt to have this too".
+// ----------------------------------------------------------------------
+
+function ueCsvStringifyValue(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return `(${value.map((v) => ueCsvStringifyValue(v)).join(",")})`;
+  }
+  if (typeof value === "object") {
+    const parts = Object.entries(value).map(([k, v]) => `${k}=${ueCsvStringifyValue(v)}`);
+    return `(${parts.join(",")})`;
+  }
+  return String(value);
+}
+
+function csvEscapeCell(raw) {
+  if (raw.includes(",") || raw.includes('"') || raw.includes("\n")) {
+    return `"${raw.replace(/"/g, '""')}"`;
+  }
+  return raw;
+}
+
+function rowsToCsv(rows, nameColumn) {
+  // Column order: nameColumn first, then every field seen across all
+  // rows in first-seen order (UE requires one consistent header row;
+  // a row missing a field some other row has gets an empty cell, not
+  // a dropped column).
+  const columns = [];
+  const seen = new Set();
+  for (const row of rows) {
+    for (const key of Object.keys(row.fields)) {
+      if (!seen.has(key)) { seen.add(key); columns.push(key); }
+    }
+  }
+  const lines = [[nameColumn, ...columns].map(csvEscapeCell).join(",")];
+  for (const row of rows) {
+    const cells = [row.name, ...columns.map((c) => ueCsvStringifyValue(row.fields[c]))];
+    lines.push(cells.map(csvEscapeCell).join(","));
+  }
+  return lines.join("\r\n") + "\r\n";
+}
+
+/**
+ * GET /api/pipeline/export-csv?path=DataAssets/WorldAdmin/DT_ItemLotTable.json
+ * `path` is relative to raw-export/Content/ROD/, same traversal guard
+ * as download-file. Detects DataTable vs. generic-object-list shape
+ * from the file's own structure rather than trusting the filename.
+ */
+app.get("/api/pipeline/export-csv", (req, res) => {
+  const relativePath = req.query.path;
+  if (!relativePath || typeof relativePath !== "string") {
+    return res.status(400).json({ error: "Missing ?path= query parameter" });
+  }
+  if (relativePath.split(/[\\/]/).includes("..")) {
+    return res.status(400).json({ error: "Path traversal rejected" });
+  }
+  const fullPath = path.join(RAW_EXPORT_ROOT, relativePath);
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+    return res.status(404).json({ error: `File not found: ${relativePath}` });
+  }
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
+  } catch (e) {
+    return res.status(400).json({ error: `Not valid JSON: ${e.message}` });
+  }
+  if (!Array.isArray(data) || data.length === 0) {
+    return res.status(400).json({ error: "Expected an UnrealPak-JSON export array (a single top-level object per asset) -- this file's shape isn't recognized." });
+  }
+
+  const outName = relativePath.split(/[\\/]/).pop().replace(/\.json$/i, ".csv");
+  const first = data[0];
+
+  // DataTable shape: exactly one top-level object carrying a "Rows" map.
+  if (data.length === 1 && first && typeof first.Rows === "object" && first.Rows !== null) {
+    const rows = Object.entries(first.Rows).map(([rowName, fields]) => ({ name: rowName, fields: fields || {} }));
+    const csv = rowsToCsv(rows, "Name");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
+    res.setHeader("X-Export-Kind", "datatable");
+    return res.send(csv);
+  }
+
+  // Best-effort DataAsset export: one row per top-level object, using
+  // its own Name and Properties -- explicitly labeled best-effort via
+  // the X-Export-Kind header (the frontend surfaces this before
+  // download) since this isn't a real UE import convention.
+  const rows = data
+    .filter((obj) => obj && typeof obj === "object")
+    .map((obj, i) => ({ name: obj.Name || `Row${i}`, fields: obj.Properties || {} }));
+  if (!rows.length) {
+    return res.status(400).json({ error: "No exportable rows found in this file (no Rows map and no Properties objects)." });
+  }
+  const csv = rowsToCsv(rows, "Name");
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
+  res.setHeader("X-Export-Kind", "dataasset-best-effort");
+  res.send(csv);
+});
+
+/**
+ * GET /api/pipeline/export-csv-info?path=...
+ * A cheap pre-check the frontend calls before offering the download
+ * button, so it can show "DataTable, 242 rows" or "DataAsset,
+ * best-effort" without downloading the whole CSV just to find out.
+ */
+app.get("/api/pipeline/export-csv-info", (req, res) => {
+  const relativePath = req.query.path;
+  if (!relativePath || typeof relativePath !== "string" || relativePath.split(/[\\/]/).includes("..")) {
+    return res.status(400).json({ error: "Missing or invalid ?path=" });
+  }
+  const fullPath = path.join(RAW_EXPORT_ROOT, relativePath);
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+    return res.status(404).json({ error: `File not found: ${relativePath}` });
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
+    if (Array.isArray(data) && data.length === 1 && data[0] && typeof data[0].Rows === "object" && data[0].Rows !== null) {
+      return res.json({ kind: "datatable", rowCount: Object.keys(data[0].Rows).length });
+    }
+    if (Array.isArray(data)) {
+      const rows = data.filter((o) => o && typeof o === "object" && o.Properties);
+      return res.json({ kind: "dataasset-best-effort", rowCount: rows.length });
+    }
+    return res.json({ kind: "unrecognized", rowCount: 0 });
+  } catch (e) {
+    return res.status(400).json({ error: `Not valid JSON: ${e.message}` });
+  }
+});
+
 /**
  * GET /api/mapping-files/status
  * Returns the latest locally-available USMAP/IDA file (if any) for

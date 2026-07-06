@@ -829,7 +829,34 @@ const CoverageReportView = {
           exists and is shown as an informational slider (visible in the user's reference
           screenshot as "Weapon Proficiency 3"), but nothing in this export confirms what action
           earns these points or that the value feeds the ATK formula at all — it is deliberately
-          NOT wired into any calculated total, only displayed.
+          NOT wired into any calculated total, only displayed. It DOES drive the Sword Skills
+          list below Equipped Gear, though: each of the 67 sword skills carries its own
+          <code>weaponProficiency</code> requirement (0-10, confirmed directly on the data), a
+          separate and more reliable link than the ATK question above.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>Bonus Modifiers</b> (<code>DA_AttributeModification</code>'s <code>BonusModificationData</code>,
+          shown below Equipped Gear): real breakpoints that unlock as each of the 7 growth stats
+          rises — all 19 distinct effect types across all 7 stats are accounted for and labeled,
+          none left to guess. TriggerLevel is read as the STAT'S OWN value (e.g. "at Vitality 30,
+          gain..."), the natural reading of the source data's shape, but NOT independently
+          screenshot-confirmed the way the HP/Stamina/SP floor values above are — stated as such
+          rather than presented with equal confidence. Only 7 of the 19 effect types
+          (flat HP/Stamina/SP, ATK/DEF %) have an existing numeric home in this toolkit; the rest
+          (sword-skill damage buffs, dodge, sprint, economy) are shown for reference but not
+          summed anywhere.
+        </p>
+        <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
+          <b>After Modifiers</b> (under Weapon Proficiency): a strictly ADDITIVE calculator layered
+          on top of the existing baseline — it never changes what's computed or shown above it.
+          Combines the quantifiable Bonus Modifiers above with a single EX-MOD picker (the same
+          26-type pool the standalone Weapons page's 4-slot system draws from) into a
+          baseline → +Bonus Modifiers → +EX-MOD → After table for Max HP/Stamina/SP/ATK/DEF.
+          Equipped Unique MODs are listed alongside for reference (via the same
+          <code>renderModCalloutShared()</code> the Weapons/Armor pages use, so wording can't
+          drift) but are NOT summed into the table — not every Unique MOD's effect is expressible
+          as the plain flat/percent bonus this calculator adds, and folding them in would imply
+          more precision than the data supports.
         </p>
       </div>
 

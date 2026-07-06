@@ -3003,6 +3003,169 @@ the code says which one it is.
 
 ---
 
+## 41. Characters > Player: Bonus Modifiers, Sword Skills, After Modifiers calculator, and stat controls
+
+### DA_AttributeModification survey
+
+The requested data source. `DataAssets/Parameters/Shared/
+DA_AttributeModification.json` turned out to be MUCH richer than just
+`BonusModificationData` -- it also carries `ExtraModificationData`,
+`BenefitModificationData`, `PeculiarModificationData`,
+`ConditionalPeculiarModificationData`, `SupportSkillModificationData`,
+`GiftPillarModificationData`, `PartnerModificationData`, and several
+curve fields -- scope for this session stayed on `BonusModificationData`
+per the specific request. It's keyed by `EGrowthType` (the exact 7
+stats this toolkit's Player builder already tracks as
+STR/DEX/AGI/INT/VIT/END/MND), each with a `LevelData` array of
+`{TriggerLevel, Effects: [{Type, Value}]}` breakpoints -- confirmed by
+reading every entry directly: 79 breakpoints total, 19 distinct
+`EModificationType` values, all identified and labeled (BonusHealth,
+CoefATK, EnhSlashDmg, CoefCol, etc.) -- none left unrecognized.
+
+### Pipeline: build_attribute_modifications() (52 -> 60 sections this session, several additions)
+
+New section extracts the 7 stats' breakpoints into a clean
+`AttributeModifications.json`, with each effect tagged by a human
+label AND a `quantifiable` field: 7 of the 19 effect types
+(BonusHealth/BonusStamina/BonusSP/CoefATK/CoefDEF/CoefStamina/CoefSP)
+map onto a stat this toolkit's Player builder ALREADY computes
+(MaxHealth/MaxStamina/MaxSoul/ATK/DEF); the other 12 (sword-skill
+damage buffs, dodge, sprint, economy) are real effects with no
+existing numeric home here, and are marked `quantifiable: null` so
+the frontend shows them for reference without silently folding them
+into a total that would overstate precision. `ATTRIBUTE_MOD_EFFECT_INFO`
+records this classification explicitly, checked against the full
+19-type census before writing a single label.
+
+### Frontend: three additions, one deliberately separated from existing logic
+
+1. **Bonus Modifiers panel** (below Equipped Gear): categorized by
+   stat, shows every breakpoint UNLOCKED at the stat's current
+   allocated value (cumulative -- reaching 30 keeps 5/10/20's earlier
+   unlocks too, matching how the source data itself reads). Refreshes
+   automatically whenever a stat changes (a stat crossing a
+   breakpoint can add/remove a whole row, not just update a number,
+   so this is a real re-render, not a text patch).
+2. **Sword Skills panel** (also below Equipped Gear): filtered to the
+   CURRENTLY EQUIPPED weapon's category, split into unlocked/locked
+   by comparing each skill's own `weaponProficiency` field against
+   the Weapon Proficiency slider -- confirmed these are directly
+   comparable (both 0-10 range) and NOT the same thing as the
+   separate, already-flagged-informational `weaponProficiencyThresholds`
+   curve the ATK question involves.
+3. **After Modifiers calculator** (under Weapon Proficiency): per the
+   explicit request to add this "without changing the current
+   process or representation of existing data" -- `computeAfterModifiersTotals()`
+   reads the EXISTING `computePlayerVitals()`/`computePlayerCombat()`
+   outputs as an untouched baseline, then adds two independently-sourced
+   deltas: the quantifiable Bonus Modifier totals, and a single
+   EX-MOD picker's value (reusing the standalone Weapons page's own
+   26-type EX-MOD pool and `formatExModValue()`/`renderModCalloutShared()`
+   helpers rather than reimplementing them). Verified the arithmetic
+   directly in Node against the real data before trusting it in the
+   UI: hand-computed STR=50's unlocked ATK/DEF Coef total (8/13) and
+   VIT=35's unlocked BonusHealth total (20, correctly excluding the
+   30-breakpoint's EnhHealCrystal effect as non-quantifiable) both
+   matched the code's own output exactly. Equipped Unique MODs are
+   listed via the SAME shared renderer the Weapons/Armor pages use
+   (can't disagree on wording) but are explicitly NOT summed into the
+   table -- not every Unique MOD reduces to a flat/percent number this
+   calculator could add without overstating confidence.
+
+### Stat controls: +10/+100, Stat Reset, Reset
+
+Added `+10`/`+100` (and matching `-10`/`-100`) buttons alongside the
+existing `+1`/`-1`. Found and fixed a latent clamping gap while doing
+this: the original `adjustPlayerStat` only checked "is remaining
+already 0" before applying a delta, which was harmless at delta=1 but
+would have let a `+100` click silently overspend Grow Points into
+negative remaining. Fixed to clamp the applied delta to whatever
+actually remains (or up to 1 on the negative side), so a `+100` click
+with 7 points left applies exactly 7, not 100 or nothing.
+
+Two reset buttons, scoped exactly as requested: **Stat Reset** (all 7
+stats back to 1, level/gear/proficiency untouched, for reallocating
+the same build differently) and **Reset** (the entire build back to
+defaults). Both confirm before acting; Reset re-renders through the
+existing tab-switch path (`renderActiveTab`, which clears the
+container first) rather than calling `renderPlayerTab` directly,
+which would have appended a second copy on top of the first instead
+of replacing it -- caught before shipping.
+
+### Verification
+
+Rebuilt the `characters` focus group; `attribute_modifications`
+produced 7 stats / 79 breakpoints / 0 unrecognized effect types.
+Fetched the built JSON through the running server and independently
+re-derived the unlock/sum logic in plain Node against it, matching
+the in-app JS exactly. Reran a full `--status` check after two
+earlier attempts were killed by the sandbox mid-run (an environment
+quirk, not a pipeline issue -- the run that actually completed took
+under 5 minutes); 60/60 sections pass.
+
+---
+
+## 42. 4 EX-MOD slots, simplified stat buttons, and DataTable/DataAsset CSV export
+
+### Player Build: 4 EX-MOD slots, symbol-only stat buttons
+
+User feedback: a weapon allows up to 4 EX-MODs, so the After
+Modifiers calculator's single picker undersold what's actually
+possible. `player.exModPicker` (one slot) became
+`player.exModPickers` (an array of 4), with
+`computeAfterModifiersTotals()` now summing every slot's delta
+instead of reading one. The render/bind code moved from two fixed
+element IDs to `data-ex-slot`/`data-ex-role` attributes so 4 (or any
+number) of type+tier select pairs can share one delegated binding
+pass rather than four near-duplicate listeners.
+
+Also simplified the six stat delta buttons (+1/+10/+100, -1/-10/-100)
+to show only "+" or "−" -- no numeric labels -- per the request that
+position alone conveys magnitude; each keeps its exact delta in a
+`title` tooltip for anyone who wants to confirm without clicking.
+
+### DataTable/DataAsset -> CSV export (new Build Dashboard panel)
+
+New `/api/pipeline/export-csv` (+ a cheap `/api/pipeline/export-csv-info`
+pre-check) in `server.js`, converting a raw exported JSON file into a
+CSV using UE's OWN DataTable CSV convention -- reimplemented from that
+documented format, not guessed: nested struct fields become
+`(Key=Value,...)`, arrays become `(Item1,Item2,...)`, and a cell gets
+CSV-quoted whenever the encoded value itself contains a comma.
+Verified against real, non-trivial rows before trusting it: a
+DataTable row with plain nested structs
+(`DT_CombinationSlash`'s `ThumbnailTexture` fields) round-tripped
+correctly, and `DT_ItemLotTable` -- an array of structs containing
+FURTHER nested structs (`Item`, `RelotNumAdjust`) -- produced exactly
+1013 correctly-encoded rows plus a header, matching the table's own
+known row count exactly.
+
+Detects DataTable vs. generic shape from the FILE ITSELF (exactly one
+top-level object carrying a `Rows` map) rather than trusting a
+filename pattern. DataAssets (no `Rows` map -- a single Default
+object's `Properties`) get a best-effort SINGLE-ROW export instead,
+explicitly labeled `dataasset-best-effort` via an `X-Export-Kind`
+header the frontend surfaces before download -- UE has no native
+"import a DataAsset from CSV" workflow this could target, so it's
+offered per the "wouldn't hurt to have it too" request without
+implying it's an equally solid round-trip.
+
+New Build Dashboard panel: lists all 75 real DataTables (reusing the
+DT Inspector's own catalog -- never a fabricated table-name list),
+searchable by path, one-click CSV download per table, plus a manual
+path field that checks-then-offers export for anything else
+(including DataAssets). Verified end to end against the running
+server: the nested-struct and nested-array cases above, the
+DataAsset best-effort path, the path-traversal guard (rejects `..`),
+and a 404 for a nonexistent path all behaved correctly.
+
+No `build_pipeline.py` changes this round (all three changes are
+frontend + server.js), so the previous full pipeline `--status`
+verification (60/60 sections) remains valid without a redundant
+re-run.
+
+---
+
 ## Lessons learned
 
 1. **Empirical cross-referencing beats single-source trust.** The ACV
@@ -3371,6 +3534,21 @@ covers:
   WorldMap.json (no fallback for the old field shape) — now falls
   back to the bare-ID list with an explicit "re-run the build" note
   instead of silently disappearing (see section 40).
+- **Characters > Player**: Bonus Modifiers panel (DA_AttributeModification,
+  7 stats/79 breakpoints/19 effect types, below Equipped Gear) +
+  Sword Skills panel (proficiency-filtered, also below Equipped
+  Gear) + an additive After Modifiers calculator under Weapon
+  Proficiency (Bonus Modifiers + 4 EX-MOD picker slots, matching a
+  weapon's real max + listed Unique MODs, never altering the existing
+  baseline). Symbol-only +/− stat buttons at 1/10/100 magnitudes
+  (positioning conveys size; real clamping fix so +100 can't
+  overspend Grow Points), Stat Reset, and full Reset (see sections
+  41-42).
+- **DataTable/DataAsset → CSV export**: new Build Dashboard panel,
+  UE's own struct/array CSV convention reimplemented and verified
+  against real nested DataTables (1013-row DT_ItemLotTable exact
+  round-trip); DataAssets get a labeled best-effort single row (see
+  section 42).
 - **Read-only REST API** (`/api`): static resource tree
   (`tools/build_api.py`, standalone) + live Express router
   (`api/routes.js`, one-line mount) + `APIRouting.md` full spec.
