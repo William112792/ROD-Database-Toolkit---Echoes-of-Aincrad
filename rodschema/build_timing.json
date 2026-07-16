@@ -1,0 +1,10 @@
+{
+    "Load VS x64 developer environment":  0,
+    "Visual Studio 2022 + MSVC x64 toolset":  0,
+    "CMake configure":  58,
+    "CMake available":  0,
+    "Windows SDK (rc.exe present)":  0,
+    "Rust toolchain (required by RE-UE4SS)":  0,
+    "Git available":  0,
+    "Git submodules present":  0.6
+}

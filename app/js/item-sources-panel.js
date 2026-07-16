@@ -186,11 +186,20 @@ function renderLocationSection(sectionId, title, hits, color) {
   return `
     <div style="margin-bottom:10px;">
       <div style="font-family:var(--font-display); font-size:11.5px; font-weight:600; color:${color}; margin-bottom:4px;">${escapeHtml(title)} (${hits.length})</div>
-      ${expandableListHtml(sectionId, hits, (h) => `
+      ${expandableListHtml(sectionId, hits, (h) => {
+        // Resolve the chest's location fragment to its Field Map area
+        // via worldMapIndex.locationToGate (built by the world_map
+        // section). Older WorldMap builds lack the map -- the
+        // text-only fallback keeps rendering.
+        const gate = (DataStore.worldMapIndex && DataStore.worldMapIndex.locationToGate && DataStore.worldMapIndex.locationToGate[h.location]) || null;
+        return `
         <span style="font-family:var(--font-mono); color:var(--db-cyan-bright);">${escapeHtml(h.chestId)}</span>
         ${h.location ? ` <span style="opacity:0.6;">— ${escapeHtml(h.location)}</span>` : ""}
-      `)}
-      <div style="font-size:10px; color:var(--hud-text-dim); margin-top:2px;">Location = the area's location fragment; see World › Map (Field Map) to find it on a chunk.</div>
+        ${gate ? ` <a href="#" class="isp-open-map" data-gate="${escapeHtml(gate)}" data-chest="${escapeHtml(h.chestId)}"
+             style="color:var(--db-cyan-bright); font-size:10px; text-decoration:none; border:1px solid rgba(64,207,216,0.35); border-radius:3px; padding:0 5px; margin-left:4px;"
+             title="Open area ${escapeHtml(gate)} on the Field Map with this chest highlighted">📍 map</a>` : ""}
+      `;})}
+      <div style="font-size:10px; color:var(--hud-text-dim); margin-top:2px;">📍 map opens the chest's area on World › Map with its pin highlighted (pin position is approximate until placed-actor exports are uploaded).</div>
     </div>
   `;
 }
@@ -205,3 +214,16 @@ function renderDropSection(sectionId, title, hits) {
     </div>
   `;
 }
+
+
+// "Open on map" deep links from item source panels -- one delegated
+// listener (panels re-render constantly; per-render wiring would leak).
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest && ev.target.closest(".isp-open-map");
+  if (!a) return;
+  ev.preventDefault();
+  // const App doesn't attach to window -- reference the lexical global.
+  if (typeof App !== "undefined" && typeof App.openMapArea === "function") {
+    App.openMapArea(a.dataset.gate, a.dataset.chest);
+  }
+});

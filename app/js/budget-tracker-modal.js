@@ -43,10 +43,11 @@ const BudgetTrackerModal = {
               <tr><td style="text-align:left;">Research &amp; documentation</td><td style="text-align:left;">Jun 20–22, 2026</td><td>3 days</td></tr>
               <tr><td style="text-align:left;">Formula verification</td><td style="text-align:left;">Jun 22–27, 2026</td><td>5 days</td></tr>
               <tr><td style="text-align:left;">Application build</td><td style="text-align:left;">Jun 27–30, 2026</td><td>4 days</td></tr>
+              <tr><td style="text-align:left;">Post-release expansion (new export ingestion, 3D models, live build progress, Materials, RODSchema + Lua modding platform)</td><td style="text-align:left;">Jul 4–11, 2026</td><td>8 days</td></tr>
             </tbody>
           </table>
           <p style="font-size:11px; opacity:0.65; margin-top:6px;">
-            10 days, start to current state. <b>608 MB</b> across <b>8,912 files</b> in
+            18 working days, start to current state (Jul 11, 2026). <b>608 MB</b> across <b>8,912 files</b> in
             <b>839 folders</b> of exported game data, individually reviewed before being
             reverse-engineered and built into the app. 31 full application builds tracked,
             growing from 14.6 MB to 205.7 MB as sections were added.
@@ -58,23 +59,26 @@ const BudgetTrackerModal = {
               <tr><th style="text-align:left;">Discipline</th><th>Hours</th></tr>
             </thead>
             <tbody>
-              <tr><td style="text-align:left;">Reverse-engineering &amp; data analysis</td><td>260</td></tr>
-              <tr><td style="text-align:left;">Backend / pipeline engineering</td><td>170</td></tr>
-              <tr><td style="text-align:left;">Frontend engineering</td><td>430</td></tr>
-              <tr><td style="text-align:left;">QA &amp; verification</td><td>90</td></tr>
-              <tr><td style="text-align:left;">Coordination</td><td>115</td></tr>
-              <tr style="border-top:1px solid var(--hud-border); font-weight:700;"><td style="text-align:left;">Total</td><td>1,065 hrs</td></tr>
+              <tr><td style="text-align:left;">Reverse-engineering &amp; data analysis</td><td>340</td></tr>
+              <tr><td style="text-align:left;">Backend / pipeline engineering</td><td>260</td></tr>
+              <tr><td style="text-align:left;">Frontend engineering</td><td>560</td></tr>
+              <tr><td style="text-align:left;">QA &amp; verification</td><td>130</td></tr>
+              <tr><td style="text-align:left;">Coordination</td><td>150</td></tr>
+              <tr style="border-top:1px solid var(--hud-border); font-weight:700;"><td style="text-align:left;">Total</td><td>1,440 hrs</td></tr>
             </tbody>
           </table>
 
           <div class="budget-tracker-big-figure">
-            <div class="budget-tracker-big-number">$63,900</div>
-            <div class="budget-tracker-big-caption">in professional effort — at $60/hour</div>
+            <div class="budget-tracker-big-number">$86,400</div>
+            <div class="budget-tracker-big-caption">in professional effort — at $60/hour (as of Jul 11, 2026)</div>
           </div>
           <p style="font-size:12px; opacity:0.8;">
             A dedicated 5-person team (analyst, backend, frontend, QA, PM) working full-time
-            would need roughly <b>5–6 weeks</b> to reach this same point — delivered here in
-            <b>10 days</b>.
+            would need roughly <b>7–8 weeks</b> to reach this same point — delivered here in
+            <b>18 days</b>, including the full post-release re-ingestion (layout churn across
+            partners/quests/languages), the 3D model registry + in-app viewer, live per-section
+            build progress, the Materials index with UE recreation scripts, and the RODSchema +
+            Lua Scripting modding platform.
           </p>
 
           <div class="budget-tracker-section-label">Continuing to Grow: Next 3 Weeks (Projected)</div>
@@ -91,8 +95,8 @@ const BudgetTrackerModal = {
           </table>
 
           <div class="budget-tracker-big-figure">
-            <div class="budget-tracker-big-number">~$117,900</div>
-            <div class="budget-tracker-big-caption">projected total value by mid-July 2026 (~1,965 hrs)</div>
+            <div class="budget-tracker-big-number">~$140,400</div>
+            <div class="budget-tracker-big-caption">projected total by early August 2026 (~2,340 hrs)</div>
           </div>
 
           <p style="font-size:11px; opacity:0.6; text-align:center; margin-top:16px; margin-bottom:0;">

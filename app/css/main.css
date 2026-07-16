@@ -1,0 +1,15 @@
+
+/* Numeric ItemId chips in list rows -- the raw ids DataTables, shops and
+   RODSchema patches reference. Deliberately distinct from the itemKey
+   text so the two id spaces are never confused at a glance. */
+.id-chip {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid rgba(64, 207, 216, 0.35);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--db-cyan-bright);
+  opacity: 0.9;
+}

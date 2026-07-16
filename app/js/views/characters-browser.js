@@ -228,21 +228,34 @@ const CharactersBrowserView = {
           </div>
         </div>
 
+        ${character.hasDatabaseRow === false ? `
+          <div class="mod-callout unresolved" style="width:100%; text-align:left; margin-top:14px;">
+            <div class="mod-name">Roster-only partner</div>
+            <div class="mod-effect-line">
+              Declared by the game's partner registry (DT_PartnerList / stat tables /
+              PersonalData) but has no Character Database entry yet — so no unlock
+              condition or description exists to show. Name resolves from PartnerName
+              localization where available; otherwise the raw key is shown.
+            </div>
+          </div>
+        ` : ""}
         ${character.isPartner ? `
           <div class="mod-callout" style="width:100%; text-align:left; margin-top:14px;">
             <div class="mod-name">Also a Partner</div>
             <div class="mod-effect-line">
-              Has a 200-level stat growth table — see the Partners tab for the interactive level
-              slider.
+              Listed in the game's Partner registry — see the Partners tab for the stat
+              growth table and interactive level slider (when that partner's DT_Partner
+              table is in the export).
             </div>
           </div>
         ` : ""}
+        ${ModelPanel.html(DataStore.getModelRef("partner", character.code), DataStore.getCharacterDisplayName(character))}
         ${!verified ? `
           <div class="mod-callout unresolved" style="width:100%; text-align:left; margin-top:14px;">
             <div class="mod-name">No name found</div>
             <div class="mod-effect-line">
               This row exists in the database (code "${escapeHtml(character.code || "")}") but has no
-              matching name string in any of the 13 language files in this export.
+              matching name string in any language file in this export.
             </div>
           </div>
         ` : ""}
@@ -251,7 +264,7 @@ const CharactersBrowserView = {
   },
 
   // ============================================================
-  // Partners tab: the 7 with a stat table + interactive level slider
+  // Partners tab: every partner with a stat table (data-derived — 7 pre-release, more as DT_Partner_* tables ship) + interactive level slider
   // ============================================================
 
   renderPartnersTab(container) {

@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RODSchema Weapons Schema (v1, stats-only)",
+  "description": "Keys are real ItemKey values (e.g. ItemName_WOS_1). RODSchema resolves ItemKey -> numeric ID against the live RODItemDataAsset at boot, then patches the matching TMap entry in place. Mesh/visual fields are NOT supported in v1 -- see README 'Known limitations'.",
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "properties": {
+      "Category": {
+        "type": "string",
+        "enum": ["OneHandedSword", "Rapier", "Dagger", "Mace", "TwoHandedSword", "Axe"],
+        "description": "Which weapon category map to look in. Optional if the ItemKey's prefix (WOS/WRA/WDA/WMA/WTS/WAX) unambiguously identifies it -- RODSchema infers it from the prefix when omitted, but you can set this explicitly if you're ever unsure."
+      },
+      "CopyStatsFrom": {
+        "type": "string",
+        "pattern": "^ItemName_(WOS|WRA|WDA|WMA|WTS|WAX)_[0-9]+$",
+        "description": "Convenience field: copy WeaponAttack, Grade, Class, ModNames, WeaponTypeID, WeaponStrikeType, and the full enhancement curve (BaseWeaponATK[] + AbilityCorrectionRank arrays) from another real ItemKey in the SAME category, in one step. Applied first; any fields you also set explicitly below override the copied values."
+      },
+      "WeaponAttack": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Base ATK at +0 enhancement. Confirmed real field."
+      },
+      "Grade": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Item grade/tier, confirmed real field (Shortsword=1, Death's Salvation=5)."
+      },
+      "Class": {
+        "type": "string",
+        "enum": ["EClassRank::RankD", "EClassRank::RankC", "EClassRank::RankB", "EClassRank::RankA", "EClassRank::RankS"],
+        "description": "Displayed rank badge. CONFIRMED LIMITATION: direct standalone overrides of this field are not supported in this build (CastField<FEnumProperty> fails to compile against this specific RE-UE4SS build's reimplemented property classes). Using CopyStatsFrom to copy a full stat block (including Class) from another weapon works fine and is unaffected -- only an explicit standalone override of just this one field, outside CopyStatsFrom, doesn't work yet."
+      },
+      "ModNames": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Unique MOD key(s) attached to this weapon, e.g. 'SoulBite'. Confirmed real field -- note the numeric EFFECT for a given ModName is looked up elsewhere (DA_AttributeModification) and is NOT redefined here; you're only changing which mod key this weapon points at."
+      },
+      "WeaponTypeID": { "type": "integer" },
+      "WeaponStrikeType": {
+        "type": "string",
+        "enum": ["EStrikeType::Slash", "EStrikeType::Crush", "EStrikeType::Sever"],
+        "description": "Confirmed enum on the struct; exact full value set not exhaustively verified beyond what's seen in this export -- if the game rejects a value here, check UE4SS.log for the real enum's other entries."
+      },
+      "BuyAmount": { "type": "integer", "minimum": 0 },
+      "SellAmount": { "type": "integer", "minimum": 0 },
+      "CanBuyAndSell": { "type": "boolean" },
+      "Enhancement": {
+        "type": "object",
+        "description": "Patches the SEPARATE per-ID entry in the category's *EnhancementDataAsMap. Omit to leave the enhancement curve untouched (e.g. if you only used CopyStatsFrom, which already copies this).",
+        "properties": {
+          "BaseWeaponATK": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "21-entry array, one ATK value per enhancement tier (+0 through +20). Confirmed real field."
+          },
+          "AbilityCorrectionRankSTR": { "type": "array", "items": { "type": "string" } },
+          "AbilityCorrectionRankDEX": { "type": "array", "items": { "type": "string" } },
+          "AbilityCorrectionRankAGI": { "type": "array", "items": { "type": "string" } },
+          "AbilityCorrectionRankINT": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "additionalProperties": false
+  }
+}

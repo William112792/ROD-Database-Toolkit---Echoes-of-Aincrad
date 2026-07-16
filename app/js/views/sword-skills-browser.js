@@ -220,9 +220,34 @@ const SwordSkillsBrowserView = {
         Name/description: DataAssets/Items/Weapons/SwordSkill/DT_SwordSkillList_${escapeHtml(skill.category)}.json
         row "${escapeHtml(skill.id)}" → SwordSkillName_${escapeHtml(skill.id)} / SwordSkillDescription_${escapeHtml(skill.id)}
         in the official game localization.<br/>
-        Weapon Proficiency + Soul cost: same row's own <code>WeaponProficiency</code> / <code>Decrease_Soul</code> fields.
+        Weapon Proficiency + Soul cost: same row's own <code>WeaponProficiency</code> / <code>Decrease_Soul</code> fields.<br/>
+        Animation clips: same row's <code>SkillLevel1..5ClipID</code> fields.
       </div>
     `;
+
+    // Animation clip per skill LEVEL. These are clip IDENTIFIERS, not
+    // asset paths -- and the AnimMontage assets they name are not in
+    // this export (the strings appear nowhere else, including the SDK's
+    // GObjects dump). Shown as what they are, with the naming
+    // convention spelled out, rather than as links that would 404.
+    const clips = skill.animationClips || [];
+    const animationBlock = clips.length ? `
+      <div class="hud-panel" style="width:100%; text-align:left; margin-top:12px; padding:12px 14px;">
+        <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:4px;">ANIMATION CLIPS (per skill level)</div>
+        <table style="width:100%; border-collapse:collapse;">
+          ${clips.map((c) => `
+            <tr>
+              <td style="padding:2px 8px 2px 0; font-size:11px; color:var(--hud-text-dim); width:60px;">Lv ${c.level}</td>
+              <td style="padding:2px 0; font-family:var(--font-mono); font-size:11px; color:var(--hud-text);">${escapeHtml(c.clipId)}</td>
+            </tr>`).join("")}
+        </table>
+        <div style="font-size:9.5px; color:var(--hud-text-dim); margin-top:5px;">
+          Naming convention: <code>SwordSkill_&lt;weaponIndex&gt;_&lt;skillIndex&gt;_&lt;level&gt;</code>. The AnimMontage assets
+          themselves are <b>not in this export</b> — no asset, path, or object anywhere carries these names. To view them,
+          export the game's <code>Animation/</code> (or <code>CHR/**/Montage</code>) tree from FModel and upload it; the
+          Asset Inspector will pick them up.
+        </div>
+      </div>` : "";
 
     detailPane.innerHTML = `
       <div class="hud-panel weapon-preview">
@@ -257,7 +282,8 @@ const SwordSkillsBrowserView = {
           </tbody>
         </table>
 
-        ${sourceFootnote}
+        ${animationBlock}
+      ${sourceFootnote}
       </div>
     `;
 

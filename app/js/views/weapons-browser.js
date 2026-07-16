@@ -236,6 +236,7 @@ const WeaponsBrowserView = {
       <span class="wl-name">${escapeHtml(DataStore.getDisplayName(weapon.itemKey))}</span>
       ${!verified ? '<span class="pill unverified">unverified</span>' : ""}
       <span class="wl-id">${weapon.itemKey}</span>
+      ${weapon.id != null ? `<span class="id-chip" title="Numeric ItemId — the value DataTables, shops and RODSchema patches reference">#${weapon.id}</span>` : ""}
     `;
     row.addEventListener("click", () => {
       this.state.selectedItemKey = weapon.itemKey;
@@ -300,6 +301,7 @@ const WeaponsBrowserView = {
         </div>
 
         ${this.renderModCallout(weapon)}
+        ${ModelPanel.html(DataStore.getModelRef("weapon", weapon.itemKey), DataStore.getWeaponDisplayName ? DataStore.getWeaponDisplayName(weapon) : weapon.itemKey)}
         ${renderItemSourcesPanelHtml(weapon.itemKey)}
       </div>
     `;

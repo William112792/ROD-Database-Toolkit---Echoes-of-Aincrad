@@ -287,6 +287,7 @@ const ItemsBrowserView = {
       <span class="wl-name">${escapeHtml(DataStore.getItemDisplayName(item.itemKey))}</span>
       ${!verified ? '<span class="pill unverified">unverified</span>' : ""}
       <span class="wl-id">${item.itemKey}</span>
+      ${item.id != null ? `<span class="id-chip" title="Numeric ItemId — the value DataTables, shops and RODSchema patches reference">#${item.id}</span>` : ""}
     `;
     row.addEventListener("click", () => {
       this.state.selectedItemKey = item.itemKey;
@@ -521,6 +522,8 @@ const ItemsBrowserView = {
         <span class="wl-name">${escapeHtml(DataStore.getRecipeDisplayName(r.itemKey))}</span>
         ${!verified ? '<span class="pill unverified">unresolved</span>' : ""}
         <span class="wl-id">${r.itemKey}</span>
+        <span class="id-chip" title="Recipe map key — the id BlacksmithCreateList uses, scoped by ERecipeKind">#${r.recipeKey}</span>
+        ${r.costItemId != null ? `<span class="id-chip id-chip-buy" title="Cost token id — what shops and MerchantCreateList reference when SELLING this recipe">buy #${r.costItemId}</span>` : ""}
       `;
       row.addEventListener("click", () => {
         this.state.selectedRecipeKey = r.itemKey;
@@ -614,7 +617,15 @@ const ItemsBrowserView = {
           </tbody>
         </table>
       </div>
+      ${renderItemSourcesPanelHtml(recipe.itemKey)}
     `;
+    // The sources panel already resolves an item to the chests that hold
+    // it and deep-links each one to its map area -- and a recipe IS an
+    // item (recipe.itemKey), so reusing it gives Recipes the map link for
+    // free rather than growing a second, drifting copy of the same
+    // lookup. 162 of the 245 recipes are chest loot. Its "open on map"
+    // links are wired by a delegated document listener and its expand
+    // toggles bind themselves, so there is nothing to call here.
   },
 };
 

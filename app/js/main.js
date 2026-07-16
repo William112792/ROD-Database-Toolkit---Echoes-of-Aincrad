@@ -320,6 +320,18 @@ const App = {
         crumb.textContent = "Tools / Asset Inspector";
         AssetInspectorView.render(scroll);
         break;
+      case "materials":
+        crumb.textContent = "Tools / Materials";
+        MaterialsBrowserView.render(scroll);
+        break;
+      case "rodschema":
+        crumb.textContent = "Tools / RODSchema";
+        RodSchemaView.render(scroll);
+        break;
+      case "lua-scripting":
+        crumb.textContent = "Tools / Lua Scripting";
+        LuaScriptingView.render(scroll);
+        break;
       case "wwise-audio":
         crumb.textContent = "Tools / Wwise Audio";
         WwiseAudioView.render(scroll);
@@ -448,6 +460,24 @@ const App = {
     } else if (this.monstersSubTab === "stats") {
       MonsterStatsBrowserView.render(viewContainer);
     }
+  },
+
+  /**
+   * Deep link: open World > Map > Field Map on a specific area, with an
+   * optional chest pre-selected (its pin highlights and its contents
+   * float to the top of the side panel). Used by the item-sources
+   * "open on map" buttons; safe to call from anywhere.
+   */
+  openMapArea(gateId, chestId) {
+    this.worldSubTab = "map";
+    if (typeof WorldMapBrowserView !== "undefined") {
+      WorldMapBrowserView.state.mode = "field";
+      WorldMapBrowserView.state.fieldSub = "area";
+      WorldMapBrowserView.state.areaGateId = gateId;
+      WorldMapBrowserView.state.selectedChestId = chestId || null;
+      WorldMapBrowserView._lastChestArea = gateId; // keep the selection through the area-change reset
+    }
+    this.renderRoute("world");
   },
 
   renderWorldRoute(scroll) {

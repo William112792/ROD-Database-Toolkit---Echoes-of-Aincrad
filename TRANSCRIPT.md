@@ -3166,6 +3166,1378 @@ re-run.
 
 ---
 
+## 43. First post-release export: layout churn, 3D models, live build progress
+
+The game's first content update shipped, and the user uploaded 13 new
+Content zips (DataAssets 1–4, Localization, six Widget families, and
+ITM OneHandedSwords/Shields — the latter two carrying their recreated
+psk/pskx/blend/**fbx** binaries). Reported symptoms: Partners didn't
+update, some weapons/armor still nameless, localization counts off,
+Maps showed 1 town and odd Field Map Overview placement, chests absent
+from the map, FBX downloads missing, plus two feature asks — a
+per-section build status indicator that survives page reloads, and an
+in-app 3D model viewer.
+
+Root causes, each verified against the real files before fixing:
+
+- **Partners:** `PARTNER_CODES` was a hardcoded 7 while the new export
+  has 22 in `DT_PartnerList`, 26 `Character/Partner/PersonalData/
+  Partner_*.json` (a NEW location), and 21 thumbnails. Replaced with
+  `discover_partner_codes()` (union of all three sources — none is a
+  superset of the others) and a glob-driven `build_partner_stats`.
+  Result: 7 → 21 partner entries, 20 with thumbnails and weapons.
+- **Names/localization:** the new `Game.json` DOES contain the
+  previously-missing names (`ItemName_WOS_37` → "Proto-Elucidator S",
+  `Upper_30` → "Flutter Robes") **and two new languages (en-AU,
+  ja-JP)** the fixed 13-language dict silently ignored. Language
+  discovery is now dynamic from `Localization/Game/*/Game.json`;
+  verified 15 languages × 197/197 equipment names after rebuild. The
+  new shield is `Shield_37` (IDs jump 3–12 → 37), not `Shield_13`.
+- **Quests:** Main grew 5 → 34 and two new folders appeared (`Sub/` 61
+  with a delivery-`Accomplish` shape, `Free/` 94 generated repeatables
+  referencing a parent quest, with no localization keys in any
+  language — confirmed). Scan widened to all three with category-
+  qualified IDs (Main_0001 and Sub_0001 both exist); the quests view
+  gained a category filter; area/dungeon quest cross-refs widened.
+- **Field Map Overview placement:** UE slot semantics again — with
+  `Alignment (0.5, 0.5)` the WBP's Left/Top is each overlay's CENTER,
+  not its top-left, so every piece drew shifted by half its own size.
+  Pipeline now exports `alignX/alignY`; frontend subtracts
+  `align × size` (default 0.5 for pre-field data).
+- **Chests on the map:** still zero coordinates in the export, so each
+  area's chests fan out in a dashed APPROXIMATE ring around the area's
+  own gate marker, clickable through to resolved contents, limitation
+  stated in tooltip/legend/panel.
+- **"1 town":** a data reality, not a bug — the game ships exactly one
+  town map texture (TOB). What the update DID add: `Widget/Dungeonmap`
+  minimap module tiles (10 families, 190 tiles — backgrounds, boss
+  chambers, corridor modules), now a browsable catalog under World ›
+  Map › Dungeons; no assembled layout exists, so none is faked.
+- **FBX (and the viewer's format):** `fbx`, `glb`, `gltf` joined the
+  sidecar lists (`psa`/`ueanim` gained `fbx`/`glb` too). New
+  `model_refs` section builds `Database/Models/Models.json` — 342
+  entries (120 monsters from the game's own `Database_{id}.json` model
+  definitions with mesh + idle anim + scale, 127 weapons, 69 armor
+  incl. gendered costumes, 26 partners). Detail pages for all four
+  kinds show a 3D MODEL panel; the in-app viewer (three.js, vendored,
+  offline, ES-module bridged to the plain-script views via
+  `window.ModelViewer`/`ModelPanel`) loads .glb/.gltf only — the
+  documented Blender round-trip (import psk/pskx/fbx → export glTF
+  Binary) is stated everywhere the limitation shows. End-to-end
+  verified with a hand-built minimal GLB: sidecar indexed, button lit,
+  then removed. The user's real 34 fbx + 68 psk/pskx/blend files all
+  index correctly.
+- **Live build progress:** the runner now writes
+  `.pipeline-progress.json` (atomic, per-section pending → running →
+  ok/failed/skipped, real builds only — never `--status` checks);
+  `/api/pipeline/rebuild-progress` merges it; the dashboard renders a
+  per-section chip strip that resumes after reload and shows
+  terminal-launched runs. Verified against a real failed full run
+  (4 ok / 1 failed / 56 skipped recorded correctly).
+- **Latent focus-build crash found and fixed:** `mod_coverage`/
+  `mod_loc`/`ex_mod_loc` read context in `prepare` without declaring
+  it, so `--only=` on them raised `KeyError('resolved_mods')`. New
+  `contextNeeds` key + `resolve_selection` expansion; verified
+  `--only=mod_coverage` now auto-includes weapons/armor/peculiar_mods.
+
+Local verification ran 37/63 sections clean — the other 26 need raw
+files (SwordSkill DTs, DA_InGame, Parameters/Hero, CHR/, ANM/,
+WwiseAudio) that exist on the deployment but weren't in these zips; on
+the deployment a full run covers everything.
+
+## 44. Second data drop: 54/63 sections live, Materials index, chest-coordinate readiness
+
+Eight more zips (DataTables-DataAssets, Maps ×4, Story-Quests,
+Gameplay-Blueprints, CelShaders) took local verification from 37 to
+**54/63 passing sections** — sword skills, shops, world map (8 aligned
+overlays), gates (122 with coordinates), areas (176), item sources,
+monster spawns/drops/stats, player sim, and **25 partner stat tables**
+all now build. Still missing from every upload so far:
+`DT_ActiveSkillList.json` + `PlayerConfig.json` (Parameters/Hero),
+`Character/NPC/Parts|Action`, `Widget/AvatarCustomize` WBPs, and the
+whole `CHR/`, `ANM/`, `WwiseAudio/` trees (asset inspector + audio).
+
+**Chest coordinates, answered with evidence:** FixTBoxTable rows are
+loot-only; the World Composition tile levels contain zero gameplay
+actors (checked object types); both persistent levels are World
+Partition (`PL_*_WP`), so placed `BP_TBox*` actors live one-per-package
+under `Content/__ExternalActors__/` — not yet exported.
+`_scan_chest_actor_coordinates()` ships AHEAD of that data (tolerant
+key/RelativeLocation matcher over `__ExternalActors__` + `Maps/`), the
+chest/world-map builders carry a `coordinates` field, and the map view
+plots solid pins for placed chests while keeping dashed approximate
+gate-ring pins for the rest. Upload → rebuild → real pins.
+
+**Materials:** new `materials` section indexes 658 assets (199
+masters, 459 instances, 231 cel-family, 9 broken chains) with parent
+chains, children, and chain-merged effective parameters — necessary
+because the game's names lie (`M_CHR_Cel_Upper` is a
+MaterialInstanceConstant; the true master is
+`M_CHR_Cel_MaterialTypes`, 163 descendants). New Tools › Materials
+view browses it. `tools/generate_ue_material_script.py --family <root>`
+emits a UE 5.3.2 editor script creating parents before children with
+full parameter scaffolding; two verified hard limits documented
+everywhere: cooked exports strip the master node graph (0
+MaterialExpression objects, empty CachedExpressionData), and
+MSM_CelSf is a custom engine shading model (DEFAULT_LIT substituted,
+warning logged). Emitted CelShader script: 7,415 lines, valid Python.
+
+## 45. Third drop: 58/63 sections, real 3D render verified, per-monster joins, recreation ZIPs
+
+Five more zips (NPCs, SignPosts, 3DRenders, Widget-MapTexture,
+WorldData-PL). Findings, checked not assumed:
+
+- **SignPosts carry NO coordinates** — they're BlueprintGeneratedClass
+  definitions (SCS only). **NPC Action files DO carry world
+  coordinates** (RootData Location X/Y/Z) — the npcs section now
+  builds 208 NPCs with 169 appearance-parts and 154 placed actions.
+  WorldData_PL_* are per-world spawn/boss wiring, no chest positions.
+  Chest coordinates still = Content/__ExternalActors__ (both
+  persistent levels are World Partition).
+- **PlayerConfig.json is a GENERATED OUTPUT** of build_player_config
+  (from the four Parameters/Hero curves), not a raw input — session
+  44's missing-files list misclassified it; corrected.
+- 58/63 sections now pass locally. Remaining: bp_inspector
+  (Widget/AvatarCustomize WBPs), asset_skeletons +
+  asset_inspector_index (CHR/**/SK_*.json mesh JSONs — the 3DRenders
+  zip shipped E001001's psk/fbx/blend/glb binaries WITHOUT the mesh
+  JSON), wwise_audio (WwiseAudio/ tree).
+- **First real 3D render verified end-to-end**: the boar .glb indexes
+  against 7 monster entries (shared mesh) — viewerReady, View 3D live.
+- **Maps**: Widget-MapTexture took towns 1 → 6 (TOB, Hornca, Malome,
+  Talan, Tolbana, Urbas), dungeon floors 10 → 25, and textured Field
+  Map areas 7 → 114 (marker placements 26 → 437) — the deployment
+  just needs the uploads + a World rebuild.
+- **Characters**: all 22 DB rows named after rebuild (stale build on
+  the deployment), AND 6 roster-only partner codes (ADN, IOF, MTO,
+  NKA, VRT, YSN — 4 with full stat tables) were invisible because
+  build_characters only read DT_CharacterDatabase. Now appended with
+  hasDatabaseRow=false, honest callout, names where localization
+  exists (Iori, Nika, Mito), raw keys where not.
+- **Monsters detail** now joins Combat Stats, Drops, and Spawns
+  inline by enemyNameKey (verified shared key across all three
+  tables), lazy-loading the two big files once, with links to the
+  full tabs.
+- **Materials recreation is one click**: /api/materials/recreation-zip
+  runs the generator server-side (family validated against the index,
+  spawn with arg array — no shell) and streams recreate_<family>.py +
+  INSTRUCTIONS.md + referenced-assets.txt. Tested: 200 on the
+  163-asset cel family, 404 unknown family, 400 invalid input.
+
+## 46. Modding platform: shields/textures bugs, chest-area links, RODSchema + Lua workbenches
+
+Fixes first, each root-caused on real data: **shields had no 3D model
+buttons** because shield AvatarParts use `ShieldMesh`, not
+`MainWeaponMesh` (user's "looking in the wrong spot" hunch was exactly
+right) — 13 shield entries now, with the user's real psk/blend/fbx
+detected; SubWeaponMesh (dual-wield offhands) carried too. **"Maps
+uploaded but not showing" was a real bug**: no focus group included
+the `textures` copy section, so a world rebuild after the
+Widget-MapTexture upload refreshed the JSONs (6 towns listed) while
+every image stayed uncopied — broken links. All six content-facing
+groups now start with `textures`. **PlayerConfig.json is a generated
+output** of build_player_config, not a raw input (corrected from
+session 44). Item pages now link each recipe/loot **chest to its Field
+Map area** (world_map's new `locationToGate` join + `App.openMapArea`
+deep link, chest pin pre-highlighted).
+
+Then the modding platform. **RODSchema** (the user's PalSchema-
+architecture UE4SS loader, 1,371 lines C++) is vendored under
+`rodschema/`; its 4 signatures were extracted from RODSignatures.h
+into a managed `signatures.json` (3 confirmed, 1 placeholder), edited
+in the new Tools › RODSchema view and written back by
+`tools_sync_signatures.py` at build time. The unified patch format
+(one JSON, edits across many tables) validates against the REAL
+export — tested: a bogus field and a nonexistent table both produce
+specific, actionable notes — and splits into RawTableLoader
+`raw/<Table>.json` files. Packaging streams source + signatures + mods
++ BUILD-INSTRUCTIONS.md (deps restored via git submodules; the DLL
+builds on Windows/MSVC — RE-UE4SS can't be cross-compiled from this
+Linux server, stated plainly rather than half-attempted). **Lua
+Scripting**: new `lua_functions` section indexes 3,139 hookable BP
+functions across 682 blueprints (Type=="Function" objects +
+generated-class names, flagged when derived); the view searches them
+and assembles mods from snippet families modeled on the three working
+example mods, downloading an installable ue4ss/Mods folder ZIP. All
+four new endpoints integration-tested against the live server.
+
+## 47. Deployment truths, shop internals, WL02 overview, patch presets, skill transport
+
+- **"Save failed: Unexpected token '<'" diagnosed**: Express's default
+  "Cannot POST" HTML page — the RUNNING server.js predated the new
+  endpoint. Frontends update on reload; the server only on restart.
+  The save handler now says exactly that instead of the cryptic parse
+  error, index.html is served no-cache, and all 46 script/css tags
+  carry ?v= stamps so a stale page can't silently pin old JS again.
+- **GameInstance class path CONFIRMED from the export**:
+  BP_RODGameInstance's SuperStruct is Class'RODGameInstance' at
+  /Script/ROD — RODSchema's "guess" was right; source comment updated.
+  Remaining blocker for DataAsset-phase loaders is only the Init()
+  vtable index (Windows debugger work, PalSchema-style). UDataTable::
+  Serialize (confirmed) covers every raw DataTable edit; DataAssets go
+  through the typed loaders at GameInstance init — they are NOT
+  covered by the Serialize hook, which the view now states.
+- **Shops**: the three "missing" lists are FIELDS of the single Shop
+  row (each name appears exactly once — checked): YellCoinShopItems
+  (direct items), MerchantCreateList (per-RANK recipe ids),
+  BlacksmithCreateList (per-rank ERecipeKind → recipe ids). All three
+  now build + render with raw ItemIDs shown everywhere (the values
+  RODSchema patches reference). Shops.json became an object; the
+  loader handles both shapes.
+- **Field Map overview generalized**: the WL01 hardcode was stale —
+  the newer export ships WBP_Map_FloorMap_WL02 + T_FloorMap_WL02.png.
+  Now every world with both files gets an overview tab; WL02's own
+  widget has ZERO piece slots (verified), so its floor renders with
+  that stated rather than fake highlights.
+- **Patch presets, cloned from reality**: /api/rodschema/patch-examples
+  builds 5 presets at request time by CLONING REAL ROWS (weapon /
+  item / shield / shop-stock / recipe), each listing every touchpoint
+  the game's standard uses — including honest _limitations: stats are
+  ItemDataAsset maps (typed loader), display names are StringTable
+  localization RawTableLoader can't patch yet, per-category thumbnail/
+  impostor tables (there is no generic DT_WeaponThumbnail — checked).
+- **AI Skill transport root cause**: the skill fetched via sandbox
+  urllib, and Claude's code sandbox has an egress ALLOWLIST — the
+  user's duckdns domain is unreachable from there no matter how
+  healthy the site is (NPM was innocent). SKILL.md reworked to
+  web_fetch-FIRST with an NPM triage checklist; both scripts marked
+  fallback-only. Budget Tracker updated to Jul 11 (18 working days,
+  1,440 hrs / $86,400 at the stated $60/hr baseline); coverage
+  report's 13-language / 7-partner era claims corrected.
+
+## 48. The Game SDK: Dumper-7 dumps become a UE-project module
+
+The missing half of the modding story arrived: the FModel exports show
+the DATA, and a Dumper-7 dump shows the TYPES it's poured into. Both
+dumps (release-1.0.3 and beta-1.0) are now first-class inputs.
+
+- **Upload** (`/api/pipeline/upload-sdk-zip`, wired into the Build
+  Dashboard's existing drop zone): validated by SHAPE
+  (CppSDK/SDK/ROD_structs.hpp must be present -- that's what makes it
+  THIS game's dump), extracted to `raw-export/GameSDK/<version>/` so
+  versions coexist instead of overwriting, and the `.usmap` is also
+  copied to `raw-export/Mappings/` where FModel/UE4SS users look.
+- **Index** (new `game_sdk` section + `sdk` focus group): parses the
+  ROD module -- **511 enums, 921 structs, 1,250 classes**, of which
+  **93 are DataTable row structs** (deriving FTableRowBase) and **120
+  are DataAsset classes**. `URODItemDataAsset` shows its real
+  `TMap<int32, FUseItemData> UseItemDataAsMap` etc: the exact
+  containers RODSchema's typed loaders patch.
+- **Primary-dump selection**: prefer release over beta, then highest
+  version, and only then mtime. (mtime alone picked beta-1.0 purely
+  because it was copied in last -- an upload-order accident deciding
+  which SDK the app describes.) **Version drift is reported**, which
+  immediately paid off: 1.0.3 adds 6 structs and 1 enum over the beta,
+  including `FSewingLotteryDataTable` -- a whole system the beta lacks.
+- **UE-project SDK download** (Game SDK button on Data Coverage, next
+  to AI Skill): Dumper-7's own headers CANNOT go into a UE project --
+  raw offsets, Pad_ filler, DUMPER7_ASSERTS_*, no UHT macros. So the
+  toolkit REGENERATES the same types as UHT-visible declarations
+  (`UENUM`/`USTRUCT`/`UCLASS` + GENERATED_BODY + UPROPERTY), topo-sorted
+  so supers/dependencies precede dependents, bitfields restored to
+  `bool`, padding dropped, engine types left to Engine headers rather
+  than redeclared (redeclaring them is what breaks naive SDK ports).
+  Ships as a compilable module: `RODGameSDK/Public/*.h` +
+  `.Build.cs` + the `.usmap`/`.idmap` + INSTRUCTIONS.md (copy to
+  Source/, add to .uproject, regenerate project files, build).
+  Verified end-to-end: 437 structs, 144 enums, 120 DataAsset classes.
+  Layout note stated plainly in the header: offsets are NOT
+  reproduced, because UE recomputes layout and editor-side authoring
+  only needs field names and types to match -- they do.
+
+60/64 pipeline sections now pass locally.
+
+## 49. Closing the open loops: id spaces, shop roles, Lua presets, costume colors
+
+Every item left pending is done, and one of them turned up a real bug.
+
+- **Two different shop id spaces** (found by checking the ids, not
+  assuming one resolver fit both): MerchantCreateList ids are **Cost
+  tokens** (purchasable consumable-recipe items), but BlacksmithCreateList
+  ids are **recipe-map KEYS scoped by ERecipeKind** (Upper #5001 =
+  UpperRecipeDataAsMap["5001"]). The single-resolver code left **18 of 19
+  blacksmith recipes unresolved**; now 19/19 resolve. Same number under a
+  different kind is a different recipe -- which is exactly why the two
+  "fill" presets are kept separate.
+- **Shops view** restructured into four role-labeled tabs (Shop List /
+  Merchant Create List / Blacksmith Create List / Yell Coin), with the
+  player-confirmed roles stated as such -- Smithy = Blacksmith list,
+  Item Seller = ShopList + MerchantCreateList -- and YellCoin left
+  explicitly UNASSIGNED, because no export field names its consumer and
+  a plausible guess would just be a guess wearing a lab coat.
+- **ItemIDs everywhere**: numeric id chips on weapons/armor/catalog rows,
+  and recipes now carry BOTH ids that matter -- the recipe-map key AND
+  the new `costItemId` (the "buy #" token shops reference). 59/245
+  recipes have a Cost token, matching the 59 shop entries exactly.
+- **Lua Mod Presets tab**: four parameterized presets that package to
+  installable ZIPs -- StackSizePlus (UseItemDataAsMap MaxStack 5 -> 99,
+  verified vanilla value), InventorySlots, BattleHealing (simplified from
+  the user's Kirito mod), CompanionBeQuiet (their multi-file mod packaged
+  as-is). Verified end-to-end: templates fetch, tokens substitute (zero
+  left over), server returns a valid mod ZIP.
+- **The SDK answered a question the JSON exports couldn't**: there is NO
+  inventory-capacity field in any export -- but the Dumper-7 dump has
+  exactly one candidate, `URODGridListWidgetBase` (GridColumn/GridRow/
+  GridItemMax). The InventorySlots preset therefore ships in **DUMP mode
+  by default**: it logs the real live values first so they can be
+  confirmed before anything is changed. Guessing and setting blind would
+  have been the easy way to look confident and be wrong.
+- **"Fill the shop / fill the smithy" are NOT Lua jobs** and the UI says
+  so: they're DataTable edits (DT_ShopItemList's single Shop row), so
+  they live in RODSchema as presets generated from the real export --
+  59 consumable recipes into shop 1 + merchant rank 1, and all **186**
+  equipment recipes across 10 ERecipeKind buckets into blacksmith rank 1
+  (vanilla rank 1 is EMPTY -- that's what "at base level" means).
+- **Costume Feature colors**: DT_CostumeColorList = 50 colors with hex,
+  shown as real swatches on Upper/Gloves/Lower armor (ECostumeKind has
+  exactly those three values -- confirmed in the SDK, matching what the
+  player observed). It's ONE shared palette; nothing scopes a color to a
+  piece, so the app says that instead of inventing per-piece subsets.
+- **Sword Skill animations**: every skill's 5 per-level clip IDs
+  (SkillLevel1..5ClipID) are surfaced, with the naming convention spelled
+  out -- and the honest note that the AnimMontage assets themselves are
+  absent from this export (the strings appear nowhere else, including the
+  SDK's GObjects dump).
+
+61/65 sections pass locally.
+
+## 50. Naming the last four gaps (and making the dashboard say so)
+
+The four sections that don't pass are all waiting on EXPORTS, not code:
+BP Inspector (Widget/AvatarCustomize WBPs), Asset Inspector Skeletons
+(CHR/**/SK_*.json -- the mesh METADATA; the .psk/.fbx/.glb already
+uploaded are geometry), and Wwise Audio (WwiseAudio/Events). The
+fourth, Asset Inspector Index, has NOTHING missing of its own -- it is
+blocked purely by Skeletons, and the status report used to show it as
+"Missing: (nothing)", which looked like a mystery failure. Status now
+computes `blockedBy` by walking each section's requires/contextNeeds to
+the section that actually lacks inputs, and the dashboard leads with a
+"Still waiting on exports" panel naming, for each gap: the exact path
+to export, how to get it out of FModel, and what it unlocks. A person
+should never have to ask the tool why something is stuck.
+
+## 51. Two SDK-upload bugs: "undefined files" and the missing focus button
+
+Both reported immediately after shipping the SDK feature, both real:
+
+- **"Extracted undefined files"**: the upload result was rendered by ONE
+  template that assumed the content-zip response shape (`fileCount`),
+  while the SDK endpoint answers with `version` / `sdkFiles` /
+  `mappingsCopied`. Adding an endpoint without teaching the renderer
+  about its shape is exactly the kind of seam that produces confident
+  nonsense. The handler now branches and reports each upload for what it
+  actually is ("Game SDK dump received — <version>, 1,402 SDK files
+  extracted, mappings copied"), and points at the focus group to run next.
+- **No Game SDK focus button**: the dashboard read its focus groups out
+  of the CACHED status report -- and that cache is only refreshed by the
+  multi-minute full check run. A group added after the last run was
+  therefore invisible, which is a genuinely bad property for a registry
+  that's supposed to be the single source of truth. Fixed at the root:
+  `--focus-groups` (runs NO sections, milliseconds) + a
+  `/api/pipeline/focus-groups` endpoint, and the dashboard always
+  refreshes buttons from it. No new group can hide behind a stale cache
+  again.
+
+Verified against the real beta dump upload end-to-end.
+
+## 52. The stuck-build trap (and what Refresh Status actually does)
+
+Stopping the server mid-build left the dashboard permanently showing
+"Build in progress…" with every build button disabled. The root cause is
+worth naming precisely: the on-disk progress file still said
+`running: true`, and the server BELIEVED it -- my own code comment even
+said "the next real run overwrites it", which is true and yet useless,
+because the only action that would have overwritten it was the action the
+UI had disabled. A stuck state whose only exit is the thing it blocks.
+
+Fixed by making the claim verifiable instead of trusted: the progress
+file now records the build process's **pid**, and the server asks the OS
+whether that process still exists (`kill(pid, 0)`). Alive -> genuinely
+running (including terminal-launched runs, which still work). Gone -> the
+run was KILLED, so it reports `interrupted` with how far it got, keeps
+every build button enabled, and offers to clear the record. Clearing
+marks the file interrupted rather than deleting it -- the per-section
+states are the record of how far the run got, and destroying that to fix
+a stuck button would be losing information to fix UI. Clearing is refused
+while a build is genuinely alive. Progress files predating the pid field
+are trusted only for 10 minutes, so neither old files nor real terminal
+runs get stomped. Verified both directions: a dead-pid file reports
+interrupted and a rebuild returns 200; a live build reports running,
+refuses a second build (409), and refuses clearing.
+
+Also clarified the three buttons that were easy to confuse:
+**Refresh Status** re-reads current state and builds nothing;
+**Run checks now** re-runs every section as a diagnostic (minutes) and
+saves a fresh report; **Rebuild** is the only one that regenerates app
+data.
+
+## 53. Mappings shipped to a folder nothing reads
+
+Data Coverage kept advertising the 1.0.1.0 (beta) usmap/idmap even after
+a 1.0.3 dump was uploaded, and the designated mapping folder stayed
+empty. Cause: the SDK upload copied mappings to `raw-export/Mappings/`
+(where FModel users look on disk) but NOT to `mapping-files/{major}/
+{minor}/{patch}/{build}/{usmap|ida}/` -- the VERSIONED store the Data
+Coverage "Direct" buttons actually read. Two consumers, one destination:
+shipping data to a folder nothing reads is the same as not shipping it.
+
+Now both. The game version is parsed from the dump's own name (Dumper-7
+builds it from the game build string:
+`...+release-1.0.3-EchoesofAincrad` -> 1.0.3.0) and the files are filed
+under the versioned tree, so `findLatestMappingFile` picks 1.0.3 over the
+hand-placed 1.0.1.0 beta -- which is preserved alongside rather than
+overwritten. If the version can't be parsed, NO version is invented: the
+files still land in raw-export/Mappings/ and the response says plainly
+that the versioned copy was skipped and why. The upload result now names
+the version and the files it filed, so this is visible rather than
+silent. Verified with the real 1.0.3 zip: status flips 1.0.1.0 -> 1.0.3.0
+and both Direct downloads return the new files (578KB usmap, 1.16MB idmap).
+
+## 54. Two bugs I shipped: stacked shop tabs, and invisible ID chips
+
+Both mine, both found by the user, both with the same flavour -- code
+that ran without error while producing nothing (or worse than nothing).
+
+**Shops sub-tabs stacked.** `render(container)` did `appendChild(wrap)`
+WITHOUT clearing the container. That was fine while the router did the
+clearing on route change -- but the new tabs make the view re-render
+ITSELF, so every tab click appended another whole copy of the view below
+the last ("weird sections at the bottom"), and the tabs looked frozen
+because `getElementById` kept finding the STALE first copy's panes and
+dutifully updating those, off-screen above. Fixed by clearing on render,
+and by making a tab click swap only the tab body + active pill instead of
+re-rendering the view at all -- which cannot re-introduce the bug.
+
+**ID chips invisible in Catalog/Materials.** Two independent causes,
+which is why "the code is right there" was no defence:
+  1. I appended the chip INSIDE `.wl-id`, which is deliberately
+     `overflow:hidden; text-overflow:ellipsis; white-space:nowrap` so
+     long DT/BP paths truncate instead of widening rows. It truncated my
+     chips right off the end of the row. They now sit OUTSIDE it as
+     siblings with `flex-shrink:0` -- a 4-character chip is never the
+     thing that should give way.
+  2. I put the CSS in `app/css/main.css`, which DID NOT EXIST -- the
+     `cat >>` created it, and index.html only ever loads `theme.css`. A
+     stylesheet nothing loads is not a stylesheet. Rule moved into
+     theme.css; the orphan file is deleted.
+Chips now show on Catalog, Materials, Key Items, Weapons and Armor
+(numeric ItemId), and on Recipes BOTH ids that matter: the recipe-map key
+and the yellow "buy #" Cost token shops reference. Cache-bust stamps
+bumped so the changed CSS actually reaches the browser.
+
+## 55. What actually defines a quest's areas: QuestTerminalList
+
+The user asked what decides which WL01/WL02 areas a quest loads, and
+suspected terminals/safe areas rather than map areas. The data says:
+**`QuestTerminalList`** is the field, and it is a list of GATE IDS.
+Every one of the 465 refs classifies:
+
+  SA_<Location>                -> a Field Map area (matches world_map's gateId)  284
+  SA_/WT_<DUNGEONCODE>_F<n>... -> a dungeon gate                                  149
+  WT_<TownName>                -> a town warp terminal                             22
+  (nothing claims it)          -> unresolved                                        10
+
+Findings worth stating, because they answer the question rather than
+decorating it:
+
+- **NO quest's areas span more than one world.** All 189 checked: every
+  quest's field areas are WL01-only or WL02-only. The "areas from both
+  worlds" impression doesn't hold. What IS true is that a quest pulls
+  MANY areas from ONE world -- Sub 0022 loads 11 (Plains1_1_01 through
+  Hills2_1_08, all WL01) -- which is why several appear per quest.
+- **Free quests declare NO terminal list at all** (all 94). Only the 34
+  Main + 60 Sub quests do. So "which areas load" is a Main/Sub concept;
+  Free quests inherit whatever is streamed.
+- **Dungeon quests use dungeon-specific gates and typically zero field
+  areas** -- exactly the separation the user predicted.
+- The 10 unresolved refs are a REAL FINDING, not noise: quests reference
+  ERU_Deep, NTR_Und, NTR_Twi and WT_Darkness, none of which exist in the
+  dungeon database. Reported as unresolved rather than force-fitted; a
+  quest pointing at content the dungeon table lacks is information.
+- One case inconsistency absorbed on purpose: the quests spell a dungeon
+  "HFO_Def" where the dungeon table says "HFO_DEF". Matched
+  case-insensitively so it doesn't masquerade as a missing dungeon.
+
+Shipped as a new `quest_areas` section (runs after world_map/dungeons/
+towns, enriches Quests.json) plus an "Areas loaded" panel in the quest
+detail -- field areas are 📍 links straight to that area on the Field Map.
+
+## 56. Terminals are not chunks -- and the section nobody could run
+
+Two corrections, one to the code and one to my own claim.
+
+**The bug:** `quest_areas` was never added to the `world` FOCUS GROUP.
+The section existed, passed, and enriched Quests.json in MY full runs --
+but a user rebuilding "World" would never trigger it, so the panel had no
+data and simply didn't render. Adding a section without adding it to the
+group that would run it is a section that doesn't exist for anyone else.
+Fixed (and it sorts after world_map/dungeons/towns, whose outputs it reads).
+
+**The claim I got wrong:** I described QuestTerminalList as "the field
+that defines which areas stream in". The SDK says otherwise, and the SDK
+is the authority here:
+  - `QuestTerminalList` is `TArray<FName>` on `FQuestData`, passed to
+    `ServerDecideQuest(..., QuestTerminalIDs, FloorTerminalIDs, ...)`
+    alongside `ClientActivateTerminal` / `ServerDecideStartTerminal`. It
+    is the set of safe areas and warp terminals the quest ACTIVATES --
+    its checkpoint / fast-travel set.
+  - Actual level streaming is driven by **`ARODLevelStreamingVolume`**:
+    an overlap volume carrying `LevelReferenceList` (TArray<FName> of
+    level names), loaded when the player overlaps it -- plus World
+    Partition cells. Those actors live in `Content/__ExternalActors__/`,
+    which is STILL not exported, so the true per-quest streamed-chunk set
+    cannot be listed. The panel now says this outright instead of letting
+    "Areas loaded" imply knowledge we don't have.
+
+So the honest answer to "are the area chunks loaded, or the safe
+areas/warp terminals?": the exported data defines the TERMINALS. The
+SA_ ids happen to double as the Field Map's own area keys (DA_MapPiece is
+keyed by them), which is why they resolve to areas so cleanly -- the
+terminal set is a faithful map of the quest's reachable FOOTPRINT, but it
+is not the streaming manifest, and the streaming manifest is in the one
+folder we still don't have.
+
+Panel retitled "QUEST TERMINALS", with the source path, the SDK type, and
+the streaming caveat stated in-place.
+
+## 57. Where the chests actually are (and why no export will show them)
+
+Investigated the Maps tree properly (163 level JSONs) instead of
+assuming. Two of my earlier claims were wrong and are now corrected:
+
+- **WL01 is NOT World Partition.** `PL_WL01` is a WORLD COMPOSITION map
+  streaming 122 sublevels (96 AlwaysLoaded + 26 Dynamic); 105 of them ARE
+  in the export. WL02 is the World Partition one (`PL_WL02_WP`) and isn't
+  exported at all.
+- **The chests are in none of them.** Searched every exported level: the
+  chest ids (TB_*) appear NOWHERE outside DT_FixTBoxTable and
+  DT_ItemLotTable. Not one map file contains a chest id or a TBox actor.
+  The gameplay level that does exist (`LV_WL01_Global_Gimmick_GP`) holds
+  33 terminal orbs, 31 safe areas and boss areas -- but zero chests.
+
+The SDK explains it. A chest is `ARODTBoxBase : ARODGimmickBase`, and its
+id is `FName LocatorName` -- assigned by an `ARODCMNGimmickLocator`,
+collected by `ARODLocatorStorage`. The `RODLocatorStorage` actors in the
+export are EMPTY shells (RootComponent only): the locator actors that
+carry the positions are not in the packages we have. DT_FixTBoxTable
+itself carries only `ItemLotTableKeys` -- no transform at all.
+
+So the honest answer to "check the umap files": I did, and the
+coordinates are not there to find.
+
+**On x64dbg / Cheat Engine / a memory dump:** the instinct is right --
+runtime is where the data lives -- but raw memory work is the hard way to
+get it. These are reflected UObjects with typed properties, and UE4SS can
+simply ask for them. Shipped `ChestLocatorDump` (a Lua preset): it walks
+`FindAllOf("RODTBoxBase")` and the gimmick locators, reads `LocatorName`
+plus `K2_GetActorLocation()`, and writes ChestLocations.json. No
+signatures, no offsets, nothing to re-derive when the game patches.
+
+The only real constraint is streaming: a chest exists only while its
+level is loaded, so a dump is partial by nature. Hence the whole path
+ACCUMULATES -- the mod gathers across a session, and the upload endpoint
+MERGES rather than replaces, so sweeping the world in several passes
+converges on all 526. Verified end-to-end with a simulated dump: upload
+-> merge -> rebuild -> coordinates land on the chests (then cleared, so no
+fake data ships).
+
+## 58. Wwise audio: playback in the browser (and 3 sections unblocked)
+
+The Blueprint/Widget/WwiseAudio exports landed. **64/66 sections now
+pass** -- BP Inspector (6,318 widgets, 1,917 functions) and Wwise Audio
+both unblocked; only Asset Skeletons (CHR/**/SK_*.json) and the index
+that depends on it remain.
+
+Two of my earlier assumptions about Wwise were wrong:
+- The tree is at **Content/WwiseAudio** -- a SIBLING of Content/ROD, not
+  inside it. The section's rawInput pointed at ROD/WwiseAudio, so it
+  could never have run even with the data present.
+- Events DO carry their media: `EventCookedData.EventLanguageMap` gives
+  SoundBanks and media paths. 10,233 events, 8,548 with media.
+
+Media had to be matched by **wem ID, not path**: an event references
+`Media/26/2628378.wem`, but the LOCALIZED file lands at
+`Media/English(US)/26/2628378.wem`. Path-matching resolved 19% of refs;
+ID-matching resolves 34% -- and, crucially, gives **5,748 events a
+COMPLETE set of files** (vs 0 by path). The id IS the identity; the
+folder is just storage.
+
+**Playback.** Every .wem here is Wwise Vorbis -- format tag 0xFFFF,
+checked across the export rather than assumed. No browser plays it, and
+ffmpeg cannot decode it ("no decoder found for: none"). vgmstream can.
+So:
+  * **Download always works** -- raw .wem, zero dependencies.
+  * **Play** decodes server-side via vgmstream (-> WAV), re-encodes to Ogg
+    when ffmpeg is present (~5x smaller; browsers play both), and caches
+    the result so each file converts once. Verified end-to-end on real
+    game audio: a VO line decodes to a 4.7KB Ogg and plays.
+  * With NO decoder installed, the view says exactly that, with the fix --
+    rather than shipping a Play button that silently does nothing.
+`tools/get_vgmstream.sh` fetches the binary (not vendored: third-party
+license, its own release cadence, and a pinned stale copy would be worse
+than fetching the current one).
+
+The 33,609 media refs with no file are shown as "not in this export" per
+entry -- the game references them, so they belong in the list; what we
+lack is the audio, and saying which is the useful part.
+
+## 59. GimmickDump v2: Quest > Chunk > Gimmick, and pins on the map
+
+The v1 chest dump validated cleanly -- all 8 captured ids match
+DT_FixTBoxTable exactly, and all 8 fall INSIDE their area's own map
+bounds (checked, not assumed: a pin whose id says Plains1_1_01 but whose
+coordinates land outside that area's texture would be silently wrong).
+
+The user's own numbers exposed the real constraint: standing in the
+Plains safe area captured 3 of its 8 chests. Actors spawn per STREAMING
+CELL, and a named area spans several. So sweeping means walking ground,
+not visiting areas -- which is exactly why v1 (chests only) would have
+cost a second full sweep for every other gimmick type. v2 fixes that
+before the travel is spent.
+
+**GimmickDump v2** walks all 20 ARODGimmickBase subclasses in one pass:
+chests, town chests, side-quest trinkets, seals, sealed arks, arks, lore
+tips, gift pillars, map pins, quest terminals, terminals, signposts,
+doors, barriers, breakables. The generic bases are scanned LAST, so the
+town Smithy and Item Seller (which the SDK gives no class of their own)
+are still captured -- tagged honestly as "accessible" rather than
+mislabelled as something specific. Ids come from whichever field the SDK
+actually declares (LocatorName / ID / SubQuestID), never invented. Scan
+interval defaulted to 20s as asked.
+
+The context that was missing:
+  * **chunk** -- parsed from the ACTOR'S OWN full name (the level package
+    it lives in), not from where the player was standing. The difference
+    between knowing and guessing.
+  * **questId** -- URODQuestManager:GetQuestID() at capture time.
+
+Pipeline: new `gimmick_locations` section builds Gimmicks.json + a
+**Quest > Chunk > Gimmick** tree, pushes real coordinates into Chests.json
+AND into WorldMap.json's embedded chest copies (which are built before any
+dump exists, so they'd otherwise keep drawing the approximate ring for
+chests we now know exactly). Chests are deliberately NOT added as generic
+markers -- the map already draws them from Chests.json with a loot popup,
+and double-pinning would lose that.
+
+Honest limits kept: `questId` is the quest ACTIVE when a gimmick was first
+seen -- a capture circumstance, not ownership, and labelled as such. Area
+is parsed from ids that encode one (chests always do); for gimmicks whose
+ids don't, area is left NULL rather than inferred from proximity. A wrong
+pin is worse than no pin.
+
+Verified with the real 8-chest dump: 5 of 8 chests in Plains1_1_01 now
+pin at true coordinates, the other 3 remain dashed approximations. 65/67
+sections pass.
+
+## 60. "Is the Lua updated?" -- it was, and that's the bug
+
+The user looked at the Lua Scripting view and saw only the chest preset.
+The GimmickDump preset and gimmick_dump.lua WERE both in the shipped zip
+(verified by unzipping it). So the code was right and the experience was
+wrong, which is the worst combination -- it makes a person doubt a
+delivery that actually happened.
+
+Root cause: index.html carried a HARDCODED cache-bust stamp
+("?v=20260712") on all 46 script/css tags. I'd bumped it once, then
+edited lua-scripting.js repeatedly across later sessions WITHOUT bumping
+it again. Any browser holding the old file had no reason to re-fetch. A
+number a human has to remember to bump is a number that will eventually
+be forgotten -- and the failure is silent and looks like "the feature
+wasn't shipped".
+
+Fixed by DERIVING it: the server computes ASSET_VERSION at boot as a hash
+of every app asset's mtime+size, and rewrites index.html's ?v= stamps on
+the way out. Change any file, redeploy, and the URL changes by itself.
+There is nothing left to remember. Exposed at /api/asset-version, and
+logged at startup.
+
+Also fixed while in there: the static handler had TWO `setHeaders` keys
+in one object literal, so the first (the HTML-specific one) was silently
+discarded by JS. Dead code that looked load-bearing.
+
+Verified against the running server: it serves 6 presets including "Dump
+ALL gimmick locations", gimmick_dump.lua returns 200, and the template
+scans all 20 gimmick classes.
+
+## 61. Gimmick pins: the game's own icons, and one inference refused
+
+414 gimmicks from a real sweep: 106 sequence_ctrl, 73 terminals, 55
+accessible, 54 lore tips, 44 seals, 40 chests, 12 barriers, 10 subquest
+trinkets, 9 town chests, 8 signposts, 3 quest terminals.
+
+**Area attribution.** My first regex was chest-shaped (anchored,
+trailing number) and caught only chests. The area is actually encoded
+ANYWHERE in most ids -- Seal_Plains1_1_01, Ctrl_Hills1_1_09,
+BS_Hills1_1_02_5, SA_Forest2_1_03 -- so one general pattern lifts 248 of
+414.
+
+**And an inference I tested and then REFUSED.** For the remaining 166
+(lore tips are bare numbers, trinkets are UAID blobs) the obvious move is
+to resolve area from coordinates. I tried it: matching a point to the map
+piece that contains it DISAGREES with the id on **74 of the 248 ids that
+state their area outright**. The pieces overlap, so position is not
+evidence of area. Coordinate-derived area attribution is therefore not
+used at all; those gimmicks keep `area: null`. They're still DRAWN (on the
+one area whose bounds-centre is nearest, flagged `positionDerived`) --
+because "this pin is visible on this map" is a rendering fact, not a claim
+about which area a thing belongs to. Two different questions; only one of
+them has a trustworthy answer.
+
+**Pins.** The game ships icons for nearly all of it: seal, ark, door,
+sideQuestTrinket, townChest, treasureChest, searchTerminal, dungeon. Lore
+uses Waypoint Pin (Common) as asked; anything unmapped falls back to
+Waypoint Pin (Classic) -- a deliberate "we don't know the right pin yet"
+rather than a confident-looking wrong one. Every mapped icon key was
+checked against the export: all 12 present.
+
+**Two anti-clutter decisions.** Terminals already exist as static markers
+from the gates export, so dump terminals are skipped rather than
+double-pinned (but they DO fill coordinates for any terminal the export
+left at zero). And sequence_ctrl + accessible are internal logic actors --
+barriers, boss triggers, area controllers, 161 in one sweep -- so they're
+captured and listed but their layers start OFF; they'd otherwise bury the
+chests and trinkets a player actually wants.
+
+Position-derived pins were also collapsed from 665 to 236: bounds overlap,
+so pinning on every containing area triple-drew everything.
+
+## 62. Town gimmicks, World Overview pins, Recipes -> map
+
+**The user's hunch about area:null was right, and the data proves it
+without inference.** 41 of the 166 area-null gimmicks sit in chunks
+PL_TOB / PL_TOLBANA / PL_HORNCA (+3 in LV_WL01_TOB_LD) -- town chests,
+town lore tips, quest terminals, the Smithy/Item Seller accessibles. They
+have no field area in their id because they aren't IN a field area.
+
+No guessing was needed: each town's own `worldName` IS its level
+(/Game/ROD/Maps/Main/WL01/TOB/PL_TOB), and the dump records the chunk each
+actor came from -- so chunk "PL_TOB" IS town 001, by the game's own data.
+44 gimmicks now carry a townId, and Gimmicks/_index.json breaks them down
+byTown.
+
+Worth being straight about the limit: town MAPS have no world-coordinate
+transform (no bounds/texturePerPixel -- they're images with normalized
+manual markers), so town gimmicks still can't be auto-pinned on the town
+map itself. They're attributed and listed; pinning would need a transform
+we don't have and I'm not going to fake one.
+
+**World Overview pins.** worldComposites carry the same world-coordinate
+bounds + texturePerPixel as the area maps and already route through
+drawMarkers, so all 413 WL01 gimmicks now pin on the zoomed-out view --
+INCLUDING the town ones, whose coordinates are perfectly real even though
+their own town map can't place them. Note the world-level bounds test IS
+used here, unlike the area-level one that got refused: at world scale the
+two worlds don't overlap, so containment is unambiguous. Same technique,
+different reliability -- worth the distinction.
+
+**Recipes -> map.** A recipe is an ITEM (ItemName_TwoHandedSwordRecipe_12
+is chest loot, distinct from the sword it makes), but ItemSources was keyed
+only by FINISHED items, so a recipe couldn't answer "which chest holds
+me?" -- despite 162 of the 245 being chest loot. Indexed recipe items in
+the same pass (kind: "recipe") and pointed the Recipes view at the existing
+sources panel, which already renders chest -> area -> "open on map" deep
+links. Reuse, not a second copy of the same lookup that would drift.
+
+## 63. Town map pins -- I was wrong twice, and both were mine
+
+The user said the town icons still weren't showing. Two of my own errors,
+not theirs.
+
+**Error 1: I said town maps had no world-coordinate transform.** They do.
+Town_XXX.json carries OverallMapInfo and MiniMapInfo, each with a
+WorldWidth and a CenterWorldPosition -- a complete square world->texture
+mapping. I had looked at the BUILT Towns.json (which didn't carry it)
+instead of the raw export, and concluded from its absence that it didn't
+exist. Absence in a derived file is not absence in the source. TOB's
+numbers come out exact: 57344 world units / 1024 px = 56.0 units/px.
+
+**Error 2, the actual cause: my dumper captured every town gimmick at
+(0,0,0).** 22 of the 414 records sat at exactly the world origin -- 20 of
+them in town chunks. Two causes, both mine: UE4SS's FindAllOf returns
+Class Default Objects (never-placed template objects, which live at the
+origin), and a real actor whose level is loaded but whose transform hasn't
+been applied yet also reads (0,0,0) -- which is exactly what town gimmicks
+do while you're out in the field. The dumper recorded that zero and marked
+the actor "seen", so it never looked again.
+
+Fixed at both ends:
+  * Lua: skip Default__ objects outright; and if a location reads
+    (0,0,0), do NOT record it and do NOT mark it seen, so the next scan
+    retries and captures it properly once you're actually in the town.
+  * Pipeline: reject (0,0,0) records anyway, because dumps already on disk
+    still contain them. They were being pinned at the world origin.
+
+With the junk gone: Hornca 11 pins, Tolbana 13 (lore tips, town chests,
+quest terminals, warp terminal). TOB shows none yet -- every TOB capture
+WAS one of the zeros, so it needs a re-sweep from inside the town.
+
+The two town textures have DIFFERENT WorldWidths (MiniMap 81920 vs Overall
+57344 around the same centre), so normalized positions are computed per
+image variant. One transform for both would have put every pin subtly
+wrong on one of them -- the kind of bug that looks like "close enough".
+
+## 64. Lua batch 1 — the "easy" ones, and why two of them weren't
+
+Three presets, all grounded in the SDK rather than guessed:
+
+**PlayerSpeed (4x).** CharacterMovement.MaxWalkSpeed. The naive version --
+write it once -- silently reverts the first time you sprint, because the
+game rewrites your speed on every state change. So it re-asserts on a
+100ms loop and LEARNS the base speed from any value that isn't its own
+output, which is what stops 4x compounding into 16x the second time the
+loop fires.
+
+**AlwaysFullStats (HP/SP/Stamina + 4x max stamina).** Four of the user's
+requests, one mod, because they are all the same mechanism. The catch:
+these are NOT plain floats. The game uses the Gameplay Ability System, and
+the SDK says so plainly:
+    URODDefensiveAttributeSet : Health / MaxHealth   <- HP
+    URODAvatarAttributeSet    : Soul / MaxSoul       <- SP
+                                Stamina / MaxStamina
+SP being "Soul" isn't a guess: the game's own SP bar is
+URODHeroStatusSoulGaugeWidgetBase. Each attribute is FGameplayAttributeData
+with BaseValue + CurrentValue; GAS recomputes CurrentValue from active
+effects, so both are written and re-asserted on a timer.
+
+The trap worth naming: ENEMIES OWN THESE SAME ATTRIBUTE SETS.
+FindAllOf("RODDefensiveAttributeSet") returns every monster's set too --
+topping those up would heal the entire world and make the game
+unwinnable. Each set is matched back to the hero through its owner chain
+(set -> ASC -> OwnerActor) and anything else is left alone.
+
+**HotkeyUtilities (F8/F7/F9).**
+  * F8 Col: uses ARODPlayerState::AddCol(), the game's OWN grant path, so
+    the balance/UI/save all update. The request was a physical 9000-Col
+    pickup at the player's feet; spawning an actor would look prettier and
+    risks desyncing the total, so I did the honest version of the same
+    wish and said so.
+  * F7 level: URODUserInfo::Level. The real level is written to
+    PlayerLevels.json BEFORE the override, keyed by save slot, so a crash
+    can't strand you at 200. If the slot can't be read it REFUSES to
+    overwrite an existing record -- filing a level under the wrong slot is
+    exactly how someone loses one.
+  * F9: ARODInGamePlayerController::OpenDirectingMapMenu() -- the actual
+    warp map a Safe Area terminal opens.
+
+Every {TOKEN} in all three templates verified against its declared params
+(a stray token ships a dead script that only fails in-game).
+
+## 65. Lua batch 2 — one shipped, three stopped at the SDK
+
+**TownChest999 (shipped).** Hooks ARODChestBase::BP_OnOpenUI -- the town
+chest's own open event. The class split is real and already visible in our
+own data: the town chest is ARODChestBase while field treasure boxes are
+ARODTBoxBase, which is exactly the chest_town vs chest distinction the
+gimmick dump surfaces. Quantities are set on URODAvatarItemManager's Items
+and MaterialItems (FPossessItem -> FStorageItemData -> FItemDataBase, whose
+`Num` is the quantity). SET, not topped up, so a stack above 999 comes down
+to it -- which is what "even if over 999" asks for.
+
+Equipment excluded by default, on purpose: weapons and armour are unique
+instances with their own upgrade state, and a stack of 999 of one sword
+isn't a thing the game models. The toggle exists but is off, because
+turning it on is likelier to corrupt an inventory than to help.
+
+**The other three stopped, and it's worth being precise about why.** I
+went looking for the hooks and they aren't there:
+  * Item Seller: the live list is
+    URODToolShopMenuWidgetBase::ToolShopContents
+    (TArray<FToolShopDisplayContent>). That is a WIDGET's display array --
+    injecting rows into it changes what's drawn, not what the game will
+    let you buy, and purchases are validated against the shop data. A mod
+    that shows 61 consumables you can't actually purchase is worse than no
+    mod.
+  * Smithy: no equivalent contents array found on any blacksmith widget.
+  * All quests unlocked: URODQuestManager has NO unlock/open/release API
+    at all. Availability comes out of save state, not a settable flag.
+
+All three want the same thing: changed DATA (DT_ShopItemList's ShopList /
+MerchantCreateList / BlacksmithCreateList, and the quest table), not
+changed behaviour. The right instrument for that is a MOD PAK carrying
+patched DataTables -- which the game loads as its own data, so every
+validation path agrees with the UI. UE4SS Lua is the wrong tool and would
+only ever produce a convincing-looking UI over a shop that refuses to
+sell. Recommended as the next step rather than shipping three mods that
+half-work.
+
+## 66. Lua feedback round — three real bugs, and one design mistake of mine
+
+The user tested everything and reported back. Speed and stack-size worked;
+the rest exposed problems worth recording precisely, because two of them
+were the SAME bug wearing different clothes.
+
+**The design mistake was mine.** They asked for these as separate mods; I
+bundled F8/F7/F9 into one and HP/SP/Stamina into another "because they're
+the same mechanism". That reasoning was about MY convenience, not theirs.
+The cost was exactly what you'd predict: they couldn't run the working F8
+without the broken F9, and when F9 opened a menu that couldn't be closed
+they had to CRASH THE GAME to escape it. Every mod is now standalone. One
+mod, one job.
+
+**Bug 1 (the big one): the stats mods silently did nothing.** HP/SP/Stamina
+are GAS attributes in AttributeSet objects. I resolved "which set belongs
+to the hero" by assuming the set's Outer is the AbilitySystemComponent and
+walking to OwnerActor. In Unreal the Outer is normally the OWNING ACTOR
+ITSELF -- so the check never matched, no sets were found, and the loop
+no-oped forever. Silently. Now the resolver accepts either shape AND logs
+what it found, so a silent no-op can't recur.
+
+**The same bug was already sitting in battle_healing.lua** (written before
+we had the SDK): it did `hero.Health = x`. The character has NO .Health
+field -- the write went nowhere. It also searched for "ROHeroCharacter"
+(missing the D), and its "SP" recovery was actually healing Stamina.
+Rewired to the real attributes; SP is Soul, per the game's own
+URODHeroStatusSoulGaugeWidgetBase.
+
+**Bug 2: the level swap didn't stick, and the user's own diagnosis was
+right.** Col worked because AddCol() is the GAME'S grant function.
+The level swap poked URODUserInfo::Level directly -- a value the game
+recomputes from EXP, so writing it changes a number that gets overwritten.
+Replaced with ARODInGamePlayerController::ServerDebugAddHeroExp(), the
+game's own EXP grant: level-ups, stat points and UI all follow for free.
+The lesson generalizes: prefer the game's own verb over poking its nouns.
+
+**Bug 3: the fast-travel menu opened but was unusable and unclosable.**
+OpenDirectingMapMenu() was called out of context. That menu is opened BY a
+Safe Area terminal, which supplies the widget's state and owns its close
+path; calling the opener without the opener's context yields a half-built
+screen with no exit. Rather than fake the context, the mod now does what
+was actually wanted: find the nearest SA_ terminal and teleport there. No
+menu, so nothing can trap you. WT_ town terminals are skipped (you don't
+need it in town) and unplaced (0,0,0) actors are refused -- teleporting to
+the world origin would drop you into the void.
+
+**New from the user's own UE4SS console work:** the Character Creator is a
+LEVEL (/Game/ROD/Maps/ROD/PL_CharacterMake), not a widget. Shipped as an
+experiment with a double-press confirm and a blunt warning: it's a map
+change, not an overlay -- it unloads your world, and the return trip is
+unknown. Promising otherwise would be a lie.
+
+## 67. Stop guessing: a probe, and the pattern in what fails
+
+More testing, more silent failures: EXP grant, character creator, town
+chest 999, inventory slots, all three always-100% mods. Speed works. Stack
+size works. Attack speed seems to work.
+
+**The pattern is the finding.** Everything that WORKS writes a plain
+property (MaxWalkSpeed, stack size). Everything that FAILS either calls a
+function or resolves an AttributeSet. That's not a coincidence, and it
+means I've been guessing at what UE4SS can actually reach in this game --
+then shipping the guess, then guessing again when it fails. Three rounds of
+that is enough.
+
+So the main deliverable this round is **DebugProbe**: a mod that changes
+nothing and walks every assumption the failing mods rest on. Is the hero
+findable, and under what class name (battle_healing looked for
+"ROHeroCharacter" -- missing the D -- and silently did nothing for months).
+Are the AttributeSets reachable, and WHO owns them (my resolver assumed the
+AbilitySystemComponent; Unreal usually outers them to the ACTOR). Can a GAS
+attribute be read? Written? Does the write STAY written? Are the game's
+functions callable -- AddCol works, so which others do? Does the item
+manager exist? Is RegisterHook accepted? It writes PlayerProbe.txt.
+
+One log and every broken mod gets fixed from facts. Continuing to guess
+would just be a slower way of wasting the user's testing time.
+
+**KillNearby -- the user's own idea, and it may fix EXP too.** They asked:
+"could we mimic the death of a basic enemy to award the experience?" The
+game has exactly that, on the enemy:
+    ARODEnemyCharacter::KillingBlow(ACharacter* Instigator, FGameplayTag)
+That's the game's OWN death path. Called with the hero as instigator, the
+kill, the EXP, the weapon proficiency, the drops and the quest counters
+should all follow -- because we aren't awarding anything, we're telling the
+game you killed something and letting it do what it always does. Same
+principle that made AddCol work and the level-poke fail: **prefer the
+game's verbs over its nouns.** Bosses are excluded by default: a boss
+killed outside its scripted fight can strand a quest, and a stuck save is
+worse than a slow fight.
+
+**WorldLogger** -- logs map travel, streaming levels in/out, and actor
+spawns. This is the mod that answers "what does the game actually do, and
+when", which is the question behind almost every hard problem in this
+project. The streaming-cell log in particular tells you exactly when a
+gimmick sweep will capture something.
+
+**Everything that doesn't work is now flagged EXPERIMENTAL in the UI**, with
+the specific suspected cause and what would confirm it -- so a broken mod is
+tracked rather than quietly rotting in the list looking finished.
+
+## 68. The probe paid for itself immediately
+
+The user ran DebugProbe and WorldLogger. Both worked, and the probe answered
+in one pass what three rounds of guessing hadn't.
+
+**Finding 1, and it's the big one: UE4SS returns a DUMMY UObject for a
+property that does not exist -- not nil.** The probe asked for `hero.Health`
+expecting a failure (the character has no such field) and got back
+"UObject: 0000001B0FF31C18". So every `if x ~= nil` guard I have ever
+written in these mods PASSES for fields that aren't there, and the write
+then goes silently nowhere. That single fact explains the whole family of
+"installs fine, does nothing" failures. Anything that must be a number is
+now checked with type(v) == "number".
+
+**Finding 2: an AttributeSet's Outer IS the actor.** 21 Defensive sets,
+Outers being the enemy Blueprints themselves (BP_E004001_C...). No
+AbilitySystemComponent hop exists. My original resolver looked for one and
+therefore matched nothing.
+
+**Finding 3: attribute writes DO work.** Health.CurrentValue reads 1280.0
+and accepts a write. So the mechanism was never the problem -- the
+resolution was.
+
+**Finding 4: DebugAddHeroExp is CALLABLE but inert.** pcall succeeds, the
+EXP doesn't move. It's a debug stub in the shipping build. Calling a
+function successfully is not the same as it doing something -- and
+RODUserInfo isn't found at runtime at all, so the level mod had nothing to
+write to either. That whole approach is dead; KillingBlow (or a real
+GameplayEffect) is the way.
+
+**Finding 5: KillingBlow is callable but did nothing** -- almost certainly
+the FGameplayTag argument (passing `{}` isn't a valid tag). So KillNearby
+now DEFAULTS to "weaken" mode, which is built on the one thing the probe
+actually proved: enemy Health writes work.
+
+Every stat mod now WRITES THEN READS BACK, and says out loud whether the
+value stuck. A mod that can't work will now say so instead of sitting there
+looking installed. That's the real lesson from this whole arc: silence is
+the enemy, not failure.
+
+## 69. The Wwise bug was mine, and my own test path hid it
+
+The user reported every audio file still showing "not in this export", and
+gave the clue that solved it: Content/ contains ROD, WwiseAudio and
+Localization as SIBLINGS (with Content itself under EchoesofAincrad, the
+/Game equivalent).
+
+An earlier session had added mergeMisplacedContentSiblings(), which MOVES
+Content/WwiseAudio into Content/ROD/WwiseAudio -- correct at the time,
+because the pipeline then expected it there. This session I fixed the
+pipeline to read the real sibling path... and left the mover in place. So a
+dashboard upload files 50,000 .wem exactly where the pipeline no longer
+looks.
+
+It survived because MY test path and the USER'S differed: I extracted the
+zips by hand with unzip, so my builds always worked. The lesson is old and
+keeps being true -- test the path the user actually takes, not the one
+that's convenient to test.
+
+Fixed three ways: WwiseAudio removed from the mover; a SELF-HEAL that moves
+an already-buried tree back out (otherwise anyone who uploaded stays broken
+forever and has to know to fix it by hand); and both the pipeline and the
+audio server now accept EITHER location, so no upload path can break it
+again. Verified by reproducing the broken layout and healing it.
+
+## 70. Self-rebuilding tools/: builtin/ as the source of truth
+
+The user runs the app in a TrueNAS container where files copied in from the
+host are owned by the wrong user and are read-only to the app -- but
+directories the RUNNING app creates are owned by it and writable. So they
+want to delete tools/ and have the app rebuild it into a writable,
+app-owned directory, pulling vendored scripts from a builtin dir and
+fetching anything downloadable (vgmstream).
+
+The design constraint that shaped everything: **the pipeline lives IN
+tools/, so it cannot be the thing that rebuilds tools/.** Delete the folder
+and the pipeline is gone. So the rebuild is done by the NODE SERVER, which
+is still running, not by a pipeline section.
+
+  * builtin/tools/ -- every script, vendored. Restored verbatim.
+  * builtin/manifest.json -- external binaries to FETCH. vgmstream is not
+    vendored (third-party, separately licensed, 6.5MB that shouldn't be in
+    git); it's downloaded per-platform.
+  * The Tools focus group is injected by the SERVER into the group list,
+    and -- critically -- STILL APPEARS when tools/ is missing and the
+    pipeline can't be queried at all. The one button you need doesn't
+    vanish exactly when you need it.
+
+vgmstream being optional matters: a restricted container network must not
+fail the whole rebuild, so a failed fetch is logged and the scripts still
+restore. The app works without the decoder (downloads always work; only
+playback needs it).
+
+Tested the real cycle end to end: server running, `rm -rf tools`, the
+focus-groups endpoint returns only the Tools button, POST rebuilds 7
+scripts + downloads vgmstream, the restored pipeline runs again and reports
+all 10 groups, and audio preview flips to enabled. The folder is recreated
+by the server process, so inside the container it's app-owned and writable
+-- which was the whole point.
+
+## 71. The community mods handed us the answer: ExecuteInGameThread
+
+The user sent five WORKING community mods for this game (DropRateScaling,
+AutoRiposte, Norescue, AincradEnemyFinder, AincradTerminalFinder). Reading
+them took ten minutes and explained months of silent failure.
+
+**Every one of them wraps its UObject work in ExecuteInGameThread.**
+
+UE4SS runs Lua callbacks -- key binds, LoopAsync, hooks -- on ITS OWN
+thread. The game's objects live on the GAME thread. Touching a UObject from
+the wrong thread doesn't error: it quietly does nothing. That is precisely
+the failure signature we chased for three rounds: mods that install, log
+happily, and change nothing.
+
+It also explains the SURVIVORS. The speed mod "worked" because
+MaxWalkSpeed is re-read by the engine every frame anyway, so a sloppy
+cross-thread write still landed. Stack size worked for the same reason.
+Everything that needed a real call or a real state change -- EXP, the town
+chest, the kill, the attribute writes -- failed. The pattern I spotted
+("plain properties work, calls don't") was the right observation with the
+wrong explanation.
+
+All twelve mods now wrap their object work in ExecuteInGameThread.
+
+**Second gift, and it's a big one:** DropRateScaling edits DATATABLES at
+runtime:
+    local dt = StaticFindObject("/Game/ROD/DataAssets/WorldAdmin/DT_ItemLotTable.DT_ItemLotTable")
+    local rows = dt:GetRowMap()
+That is exactly the capability I said didn't exist when I concluded the
+shop/Smithy/quest injections needed a mod pak. They don't. A Lua mod can
+edit DT_ShopItemList's rows in place. The mod-pak generator still has its
+place (permanent, no UE4SS needed), but it is no longer the ONLY road.
+
+The lesson is not subtle: when someone hands you working code in the exact
+domain you're failing in, read it before writing another line.
+
+## 72. Wwise audio: a real player, and downloadable wav/ogg
+
+The play button "did nothing" because the old code fetched the whole file
+as a Blob and set src to an object URL. A blob has NO HTTP range support,
+so the browser can't seek and often won't report a duration until the whole
+file is in memory. Replaced with a real <audio> pointed straight at
+/api/audio/preview, which now serves 206 Partial Content -- so the browser
+streams, reports duration, and scrubs like any other audio URL. The UI now
+has play/pause, elapsed/total time, and a seek bar, with ONE shared audio
+element (30 VO lines playing at once is not a feature).
+
+Downloads now offer three formats: .wem (raw, no dependencies), .ogg
+(decoded + re-encoded, ~5x smaller) and .wav (decoded, lossless). Converted
+files are cached, so the second request is a file read.
+
+Bulk conversion is a new OPT-IN pipeline section (wwise_convert). It is
+deliberately in no focus group: 50,276 files take tens of minutes and
+produce gigabytes, and making that part of a normal build would turn every
+"rebuild the world map" into an hour-long job. The server converts on
+demand anyway, so nobody ever HAS to run it.
+
+## 73. A regression I shipped, and the ogg bug that wasn't about ogg
+
+**First, a mistake I made and shipped.** When I rewrote the audio preview
+handler I replaced everything between `preview` and `focus-groups` by index
+slicing -- and the TOOLS REBUILD ENDPOINTS lived in that gap. I deleted
+them and packaged it. The Tools BUTTON survived (it's generated in the
+focus-groups handler), so the UI looked fine and the endpoint behind it was
+gone. Restored, and the lesson is blunt: never splice by index across a
+region you haven't read.
+
+**The ogg bug.** The user reported .wem and .wav downloading fine, .ogg
+failing, and playback dead -- but the .wav playing fine in VLC. That last
+detail is what solved it: decoding works, so the problem is downstream of
+vgmstream. hasFfmpeg() only checked that ffmpeg EXISTS. It doesn't check
+that it can ENCODE VORBIS -- and minimal/distro-stripped ffmpeg builds
+routinely ship without libvorbis. So the encode failed (no .ogg), and
+PLAYBACK died too because preview PREFERRED ogg with no fallback.
+
+My container has libvorbis. Theirs doesn't. Same shape as the WwiseAudio
+bug: my test path is not the user's path, and that's twice now.
+
+Fixed: canEncodeVorbis() actually asks ffmpeg for its encoder list (once,
+cached); preview only prefers Ogg if we can genuinely produce one, and
+falls back to WAV otherwise -- which every browser plays and which
+vgmstream makes unaided. Ogg download now returns a clear reason instead of
+a blank failure. And ffmpeg joined vgmstream in builtin/manifest.json, so
+the Tools focus group can install a Vorbis-capable static build; the
+rebuild now handles bare binaries as well as archives.
+
+## 74. The five reference mods, recreated -- and what they unlocked
+
+All five now exist as customisable presets, alongside a new logger:
+
+  * DropRateScaling -- and reading the REAL table taught the thing that
+    matters: each enemy's reward list contains a LotItemKey of "None" --
+    the NOTHING slot -- and its weight is usually the biggest (Boar01:
+    Material 1, Food 2, None 12). So raising drop rates means SHRINKING the
+    None weight. Inflating item weights only changes WHICH item you get,
+    not WHETHER you get one. That's the difference between a mod that feels
+    like it works and one that does.
+  * AutoRiposte -- bRiposteChance + ActivateRiposteSlashSkill, fired on the
+    RISING EDGE so one window makes one counter.
+  * NoRescue, EnemyFinder, TerminalFinder -- the last two dump JSON in the
+    same shape as our gimmick dumps, so they can feed the database.
+  * ShopStock -- the mod I said needed a mod pak. DataTable editing makes it
+    possible after all.
+
+**ProgressionLogger is the important one.** The probe found that
+FindFirstOf("RODUserInfo") returns NOTHING -- which is why the EXP and level
+mods had nothing to write to. But UserInfo isn't free-floating: it's held by
+URODSaveLoadSubsystem.RODUserInfo. You reach it through its OWNER. That one
+fact makes Level, Experience, GrowPoint and -- crucially --
+WeaponExperienceData (a level+EXP pair PER WEAPON TYPE) all reachable. The
+weapon-proficiency mod the user wanted is now possible.
+
+On VIT/END/MND/STR/DEX/AGI/INT: they are NOT attributes in this game. They
+appear nowhere in the SDK as fields. They're inputs the game converts into
+the Base/Coef/Bonus values that DO exist (BaseATK/CoefATK/BonusATK,
+BaseDEF/CoefDEF/BonusDEF...). So the logger dumps those outputs, and the way
+to learn the mapping is empirical: snapshot, spend a stat point, snapshot,
+diff. Same for Cardinal Rank -- it is named nowhere in the SDK, so rather
+than invent a field, the logger hunts for it and tells you to diff across a
+rank-up. Saying "I don't know where this lives, here's how we find out" is
+worth more than a confident guess.
+
+## 75. Testing the texture-channel hypothesis instead of agreeing with it
+
+The user proposed a detailed model of the _S map (R = reflection, G =
+material ID, B = AO, A unused) and the dual-UV routing. Agreeing would have
+been easy and worthless. Two sources of ground truth existed: the pixels,
+and the material graph.
+
+**CONFIRMED, from the export itself:** TextureStreamingData records a
+UVChannelIndex per texture, and it says BC -> UV1, S -> UV0, with every
+shared detail map (Height, Dirt, DirtBuildup, Salamander, ScreenTone,
+StarFX, AnalyzeMask) on UV0. The dual-UV theory was exactly right, and it is
+now a fact rather than a guess.
+
+**REVISED, from the pixels:** R and G both sit on exactly 127.1 and are
+uncorrelated (-0.006); x^2+y^2 <= 1 holds for 99.92% of pixels. Two
+independent artistic masks do not both land on 128 -- that is a normal
+map's X/Y. B does NOT track the reconstructed Z (+0.08) and does NOT track
+albedo, so it is an independent mask in blue. Alpha is dead. And there is no
+_N map anywhere in the item tree. So the layout is more likely
+normal-XY + one mask than reflection/materialID/AO.
+
+**TWO OF MY OWN IDEAS DIED IN TESTING, which is the point:**
+  * The switches (064_Fur, 128_Leather, 160_Wood, 224_Gold) look exactly
+    like byte values, so I tested whether they were literal pixel values in
+    a material-ID channel. No spikes at 64/160/224 in any channel. Dead.
+  * I called the unit-length test "decisive" and then had to walk it back:
+    R,G cluster near 128, so ANY such texture passes it trivially. It is
+    necessary, not sufficient -- the "centred AND uncorrelated" pair is what
+    carries the weight.
+
+**A trap I nearly fell into:** the export has 15 "_S" PNGs, and I ran the
+signature across them -- they are all UI SPRITES (T_ItemCategoryIcon_*_S,
+T_ClassIcon_S), where _S means something completely different. Averaging
+them in would have produced confident nonsense. tools/analyze_texture_maps.py
+now flags and excludes them.
+
+**Also new:** BC's ALPHA is not empty (bimodal ~150-200, 3.7% at zero).
+Nobody had looked. Unknown what it carries.
+
+Shipped tools/analyze_texture_maps.py so the question gets settled across
+the whole item tree by measurement rather than argued from one sample.
+
+## 76. The texture theory, closed -- and a modal that shows the evidence
+
+The user supplied the full shield texture set (12 _S maps, 17 _BC) plus a
+REAL normal map (Weapon_Shield_030_Nrm). That turned a one-sample hypothesis
+into a settled fact.
+
+The known normal map's signature: R=128.0, G=127.1, corr(R,G)=-0.020,
+100.00% inside the unit circle -- and B = 255 with a standard deviation of
+ZERO. It stores X and Y and throws blue away, because Z is reconstructible.
+
+The game's 12 _S maps: R=127.5, G=127.2, corr=-0.005, 99.77% inside the unit
+circle -- IDENTICAL -- but B is a bimodal mask (mean ~150, std ~90) and does
+not correlate with the reconstructed Z (+0.002).
+
+    _S = a normal map's X/Y, with the wasted blue channel repurposed as a mask.
+
+Then the question that actually matters for the converter: can blue be
+DERIVED? Tested curvature, edge magnitude, slope, flatness against the real
+maps. Every correlation: |r| = 0.03-0.07. Noise. Blue is authored.
+
+So tools/normal_to_s.py packs R/G/A correctly and REFUSES to invent blue. It
+offers a constant, a mask you supply, or a curvature map explicitly labelled
+"a starting point to paint over -- the game's real maps do not look like
+this". Generating a plausible-looking blue channel would have been easy, and
+would have quietly sent someone off to build materials on a fiction.
+
+Also shipped: clicking any texture parameter in the Materials browser opens a
+modal with the image AND the channel analysis beside it. The analysis is the
+point -- "_S" looks like a specular map from its name and a normal map from
+its colour, and it is neither. Showing the measurement next to the picture is
+what stops the next person guessing from appearance, exactly as I did.
+
+On scale: the user reports 18,396 textures / 17.6GB / 3,395 folders in a full
+export. The modal therefore says "not exported yet" plainly when a texture is
+referenced but absent, rather than rendering a broken image -- and no rebuild
+is needed to add one, just drop the PNG at the same path.
+
+## 77. numpy/Pillow: install where the app can actually write
+
+The texture tools died in the user's container with "Needs numpy and Pillow:
+pip install ... --break-system-packages" -- and running that by hand didn't
+work either, because in the container the app cannot write to the system
+site-packages and --break-system-packages is refused outright. My error
+message was advice that could not be followed.
+
+Fixed the way the rest of tools/ already works: the Tools focus group now
+installs them with
+
+    pip install --target tools/pylibs numpy pillow
+
+which needs no root and touches nothing outside the app's own directory, and
+the server puts tools/pylibs on PYTHONPATH whenever it runs a Python tool.
+Same principle as the whole builtin/ design: the app builds what it needs
+into a directory it owns.
+
+**And I nearly shipped it untested.** My first "verification" reported
+"python packages: all present" -- because THIS container has numpy
+system-wide, so the probe short-circuited and the install path never ran.
+That is the third time my environment has hidden a bug that only exists in
+the user's (WwiseAudio's path, ffmpeg's missing libvorbis, now this). So I
+forced the real path: installed into tools/pylibs, then ran the tool with
+`python3 -S` (system site-packages disabled) and PYTHONPATH=tools/pylibs. It
+worked on that footing, which is the only footing that matters.
+
+The failure is also surfaced now: if PyPI is unreachable the rebuild still
+restores every script and says plainly which tools are unavailable, rather
+than reporting success and leaving a converter that errors on use.
+
+## 78. "No module named pip" -- when the dependency IS the bug
+
+The Tools rebuild reported: `python packages: FAILED -- /usr/bin/python3: No
+module named pip`. Not "pip refuses to install", not "the network is blocked".
+There is no pip in that container AT ALL. Every route I had offered was dead:
+
+    pip install                          -> can't write to site-packages
+    pip install --break-system-packages  -> refused
+    pip install --target tools/pylibs    -> No module named pip
+
+The user asked whether we could vendor the packages in builtin/. We could --
+but numpy wheels are ~18MB, platform- AND Python-version-specific (cp311 vs
+cp312 vs manylinux variants), so vendoring means guessing their interpreter and
+shipping 20MB+ into git to support one guess. That's a bad trade.
+
+The better answer is that the dependency itself was the bug. A PNG is
+zlib-compressed scanlines with a five-filter predictor. The statistics these
+tools compute are sums and counts. Neither needs a third-party library --
+zlib, struct and array ship with Python.
+
+So: tools/pngkit.py, a pure-standard-library PNG reader/writer (~180 lines,
+handles 8-bit grey/RGB/RGBA/palette, which is every texture in this game).
+Both texture tools now use numpy/Pillow WHEN AVAILABLE and fall back to pngkit
+when they aren't. Verified the honest way -- by reproducing the user's
+container (a python3 with -S so site-packages is hidden AND no pip) and running
+the real endpoints against it:
+
+  * converter: HTTP 200, valid PNG, and BYTE-IDENTICAL to the numpy output
+  * analyser: correct on a real 2048x2048 texture -- R std 17, G std 23,
+    corr(R,G) -0.006, 99.92% inside the unit circle: the same numbers numpy
+    gives, to three decimals
+  * cost: ~9s instead of ~1s for a 2048x2048 texture (it samples 1-in-4
+    pixels and SAYS SO, because a mean over 260k samples differs from the
+    full-image mean by well under 0.1 of a unit)
+
+The rebuild still TRIES pip (and now bootstraps it with ensurepip if that's
+all that's missing), because numpy is genuinely faster. But failing to install
+it is no longer an error -- it's a note saying the tools will run slower. The
+feature does not depend on it.
+
+Three times now my environment has hidden a bug that only existed in the
+user's. The fix that finally holds isn't a better install command -- it's not
+needing one.
+
 ## Lessons learned
 
 1. **Empirical cross-referencing beats single-source trust.** The ACV

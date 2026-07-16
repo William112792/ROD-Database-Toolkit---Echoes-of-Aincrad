@@ -168,7 +168,11 @@ const DataStore = {
     this.monsterCategoryIndex = await fetchJSON(
       `${CONTENT_ROOT}/DataAssets/Database/Monsters/_index.json`
     );
-    const monsterCategoryKeys = Object.keys(this.monsterCategoryIndex);
+    const monsterCategoryKeys = Object.keys(this.monsterCategoryIndex)
+      // Meta entries (e.g. "_models", added when Database 3D-model refs
+      // landed) live alongside the category entries -- only real
+      // categories carry a .file to fetch.
+      .filter((k) => !k.startsWith("_") && this.monsterCategoryIndex[k] && this.monsterCategoryIndex[k].file);
     await Promise.all(
       monsterCategoryKeys.map(async (catKey) => {
         const meta = this.monsterCategoryIndex[catKey];
@@ -242,7 +246,12 @@ const DataStore = {
     this.questIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Quests/_index.json`);
     this.questList = await fetchJSON(`${CONTENT_ROOT}/${this.questIndex.file}`);
     for (const q of this.questList) {
-      this.questByID[q.questId] = q;
+      // Post-release, quest IDs are only unique WITHIN a folder
+      // category (Main_0001 and Sub_0001 both exist), so the lookup
+      // key carries the category. getQuestKey() is the one place that
+      // computes it; pre-category data (no folderCategory field) keys
+      // by bare questId exactly as before.
+      this.questByID[this.getQuestKey(q)] = q;
     }
 
     // Areas -- same single-flat-file shape as Lore/Towns/Quests. The
@@ -283,6 +292,20 @@ const DataStore = {
       this.worldMapIndex = null;
     }
 
+    // 3D Model registry (model_refs section): per-entity mesh JSON +
+    // which binary sidecars (glb/fbx/psk/...) exist on disk right now.
+    // Optional -- pre-release builds don't have it, and every consumer
+    // (View 3D buttons, download rows) just doesn't render without it.
+    try {
+      this.modelIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Models/_index.json`);
+      const models = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Models/Models.json`);
+      this.modelsByKindKey = {};
+      for (const m of models) this.modelsByKindKey[`${m.kind}:${m.key}`] = m;
+    } catch (e) {
+      this.modelIndex = null;
+      this.modelsByKindKey = {};
+    }
+
     // Monster Spawns (three flat files: the Pop -> Lot -> Group chain)
     // and Monster Drops (reward rows with their resolved item pools).
     this.spawnIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/MonsterSpawns/_index.json`);
@@ -310,8 +333,31 @@ const DataStore = {
     this.ailmentIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Ailments/_index.json`);
     this.ailmentList = await fetchJSON(`${CONTENT_ROOT}/${this.ailmentIndex.file}`);
 
+    // Costume Feature colors (Upper/Gloves/Lower) -- optional section,
+    // so a build without it degrades to "no palette" rather than error.
+    try {
+      this.costumeColorIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/CostumeColors/_index.json`);
+      this.costumeColors = await fetchJSON(`${CONTENT_ROOT}/${this.costumeColorIndex.file}`);
+    } catch (e) {
+      this.costumeColorIndex = null;
+      this.costumeColors = [];
+    }
+
     this.shopIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Shops/_index.json`);
-    this.shopList = await fetchJSON(`${CONTENT_ROOT}/${this.shopIndex.file}`);
+    const shopData = await fetchJSON(`${CONTENT_ROOT}/${this.shopIndex.file}`);
+    // Shops.json became an object when the YellCoin/Merchant/Blacksmith
+    // lists were added; older builds are a bare shop array. Both load.
+    if (Array.isArray(shopData)) {
+      this.shopList = shopData;
+      this.shopExtras = { yellCoinShopItems: [], merchantCreateList: [], blacksmithCreateList: [] };
+    } else {
+      this.shopList = shopData.shops || [];
+      this.shopExtras = {
+        yellCoinShopItems: shopData.yellCoinShopItems || [],
+        merchantCreateList: shopData.merchantCreateList || [],
+        blacksmithCreateList: shopData.blacksmithCreateList || [],
+      };
+    }
     this.chestIndex = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/Chests/_index.json`);
     this.chestList = await fetchJSON(`${CONTENT_ROOT}/${this.chestIndex.file}`);
 
@@ -1249,6 +1295,9 @@ const DataStore = {
   },
 
   // Quest getters
+  getQuestKey(quest) {
+    return quest.folderCategory ? `${quest.folderCategory}_${quest.questId}` : quest.questId;
+  },
   getQuestDisplayName(quest) {
     const entry = this.questLocalization[quest.nameKey];
     if (entry && entry.name) return entry.name;
@@ -1266,6 +1315,24 @@ const DataStore = {
     const entry = this.questLocalization[quest.nameKey];
     return (entry && entry.dungeonName) || "";
   },
+  /**
+   * Model registry lookups (model_refs pipeline section). kind is
+   * "monster" | "weapon" | "armor" | "partner"; key is the entity's
+   * own key in that kind (titleKey / ItemName_* / partner code).
+   * Returns null when the registry isn't built or has no entry --
+   * callers render nothing in that case.
+   */
+  getModelRef(kind, key) {
+    return this.modelsByKindKey[`${kind}:${key}`] || null;
+  },
+  /** Raw-export-relative path of the first viewer-loadable sidecar (glb > gltf), else null. */
+  getViewerModelPath(modelRef) {
+    if (!modelRef) return null;
+    const sc = modelRef.sidecars || {};
+    const fsc = modelRef.femaleSidecars || {};
+    return sc.glb || sc.gltf || fsc.glb || fsc.gltf || null;
+  },
+
   getAllQuestsFlat() {
     return this.questList;
   },
@@ -1351,3 +1418,59 @@ async function fetchJSON(path) {
   }
   return res.json();
 }
+
+/**
+ * Shared "3D Model" panel HTML for entity detail views (monsters,
+ * weapons, armor, partners). One renderer so every page shows the
+ * exact same thing for the same registry entry: a View 3D button when
+ * a glb/gltf sidecar exists, download buttons for every sidecar that
+ * exists on disk, and an honest "how to get a viewable model" note
+ * when none do. Plain script (not a module) so views can call it
+ * synchronously during render; the actual viewer (window.ModelViewer)
+ * is only touched at click time, after the module has loaded.
+ */
+const ModelPanel = {
+  html(modelRef, title) {
+    if (!modelRef) return "";
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const dl = (relPath, label, note) =>
+      `<a class="toggle-btn" style="text-decoration:none; display:inline-block; margin:2px 4px 2px 0; font-size:11px;"
+         href="/api/pipeline/download-file?path=${encodeURIComponent(relPath)}" download
+         title="${esc(note || relPath)}">⬇ ${esc(label)}</a>`;
+
+    const viewPath = DataStore.getViewerModelPath(modelRef);
+    const viewBtn = viewPath
+      ? `<button class="toggle-btn" style="margin:2px 4px 2px 0; font-size:11px; border-color:var(--db-cyan-bright); color:var(--db-cyan-bright);"
+           data-mv-url="/api/pipeline/download-file?path=${encodeURIComponent(viewPath)}"
+           data-mv-title="${esc(title || modelRef.label || "3D Model")}"
+           data-mv-sub="${esc(viewPath)}"
+           data-mv-scale="${modelRef.scale ? esc(JSON.stringify(modelRef.scale)) : ""}"
+           onclick="ModelPanel.openFromBtn(this)"
+           title="Open in the in-app 3D viewer">▶ View 3D</button>`
+      : "";
+
+    const btns = [];
+    for (const [ext, p] of Object.entries(modelRef.sidecars || {})) btns.push(dl(p, ext, "Mesh sidecar (same stem as the mesh JSON)"));
+    for (const [ext, p] of Object.entries(modelRef.femaleSidecars || {})) btns.push(dl(p, `${ext} (female)`, "Female-variant mesh sidecar"));
+    if (modelRef.meshJson && modelRef.meshExists) btns.push(dl(modelRef.meshJson, "mesh JSON", "Mesh metadata JSON (UE doesn't export geometry to JSON)"));
+    if (modelRef.idleAnimJson) btns.push(dl(modelRef.idleAnimJson, "idle anim JSON", "The Database menu's idle AnimMontage for this model"));
+
+    return `
+      <div style="width:100%; text-align:left; margin-top:12px; padding-top:10px; border-top:1px solid rgba(135,200,210,0.12);">
+        <div style="font-family:var(--font-display); font-size:11px; font-weight:600; color:var(--hud-text); margin-bottom:4px;">
+          3D MODEL
+          <span style="font-family:var(--font-mono); font-size:9.5px; color:var(--hud-text-dim); font-weight:400; margin-left:6px;">${esc((modelRef.meshJson || "").split("/").pop() || "")}</span>
+        </div>
+        <div>${viewBtn}${btns.join("")}</div>
+        ${!viewPath ? `<div style="font-size:10px; color:var(--hud-text-dim); margin-top:3px;">No viewer-loadable file yet — the in-app viewer reads .glb/.gltf. Import the psk/pskx/fbx into Blender, export via File › Export › glTF 2.0 (glTF Binary), upload it next to the mesh JSON with the same stem, then rebuild the 3D Model Registry section.</div>` : ""}
+        ${!modelRef.meshExists ? `<div style="font-size:10px; color:var(--hud-sp); margin-top:3px;">Mesh JSON not in the export yet (${esc(modelRef.meshJson || "?")}) — the game data names this mesh; upload its folder to enable downloads.</div>` : ""}
+      </div>`;
+  },
+
+  openFromBtn(btn) {
+    if (!window.ModelViewer) { alert("3D viewer still loading — try again in a second."); return; }
+    let scale = null;
+    try { scale = btn.dataset.mvScale ? JSON.parse(btn.dataset.mvScale) : null; } catch (e) { /* absent/invalid scale just means 1:1 */ }
+    ModelViewer.open({ url: btn.dataset.mvUrl, title: btn.dataset.mvTitle, subtitle: btn.dataset.mvSub, scale });
+  },
+};

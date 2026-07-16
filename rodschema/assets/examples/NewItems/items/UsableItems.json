@@ -1,0 +1,57 @@
+{
+  "ItemName_Usable_1001": {
+    "NewItem": true,
+    "Category": "Usable",
+
+    "CopyItemFrom": "ItemName_Usable_1",
+    "GameplayEffectsFrom": "ItemName_Usable_34",
+    "ItemActionFrom": "ItemName_Usable_1",
+
+    "DisplayName": "X Juice",
+    "Description": "Recovers 300 HP for the user over 10 seconds.",
+
+    "BuyAmount": 150,
+    "SellAmount": 15,
+    "CanBuyAndSell": true,
+
+    "Recipe": {
+      "Col": 15,
+      "RecipeItems": [
+        { "Category": "Material", "ItemId": 26, "Num": 2 },
+        { "Category": "Material", "ItemId": 29, "Num": 1 }
+      ]
+    },
+
+    "Shop": {
+      "ShopId": 1
+    }
+  },
+
+  "ItemName_Usable_1002": {
+    "NewItem": true,
+    "Category": "Usable",
+
+    "CopyItemFrom": "ItemName_Usable_1",
+    "GameplayEffectsFrom": "ItemName_Usable_34",
+    "ItemActionFrom": "ItemName_Usable_1",
+
+    "DisplayName": "Z Juice",
+    "Description": "Recovers 300 HP for the user over 10 seconds.",
+
+    "BuyAmount": 150,
+    "SellAmount": 15,
+    "CanBuyAndSell": true,
+
+    "Recipe": {
+      "Col": 15,
+      "RecipeItems": [
+        { "Category": "Material", "ItemId": 26, "Num": 2 },
+        { "Category": "Material", "ItemId": 29, "Num": 1 }
+      ]
+    },
+
+    "Shop": {
+      "ShopId": 1
+    }
+  }
+}

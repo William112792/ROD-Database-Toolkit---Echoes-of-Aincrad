@@ -1,0 +1,46 @@
+{
+  "description": "Source of truth for the tools/ directory. The Tools focus group restores everything here into tools/, then fetches the external binaries listed below. Anything that CANNOT be fetched automatically lives here as a vendored file, so it can always be restored.",
+  "restoreFrom": "builtin/tools",
+  "restoreTo": "tools",
+  "externalTools": [
+    {
+      "name": "vgmstream-cli",
+      "purpose": "Decodes Wwise Vorbis (.wem) so the Wwise Audio browser can PLAY files in the browser. Every .wem in this game is format tag 0xFFFF (Wwise Vorbis) -- no browser plays it and ffmpeg cannot decode it. Downloads of the raw .wem work without this; only playback needs it.",
+      "dest": "tools/bin/vgmstream-cli",
+      "chmod": "0755",
+      "platforms": {
+        "linux": "https://github.com/vgmstream/vgmstream/releases/download/r1980/vgmstream-linux-cli.zip",
+        "win32": "https://github.com/vgmstream/vgmstream/releases/download/r1980/vgmstream-win64.zip"
+      },
+      "archiveMember": "vgmstream*cli*",
+      "optional": true,
+      "notVendored": "Third-party binary with its own license and release cadence. Pinning a stale copy inside this repo would age worse than fetching the current one -- and it's ~6.5MB, which has no business in git."
+    },
+    {
+      "name": "ffmpeg",
+      "purpose": "Re-encodes decoded audio to Ogg Vorbis (~5x smaller than WAV). OPTIONAL: without it, WAV downloads and in-browser playback still work \u2014 vgmstream produces WAV on its own. Only .ogg needs this. A distro ffmpeg built WITHOUT libvorbis cannot make Ogg, which is why the app checks the encoder list rather than merely checking that ffmpeg exists.",
+      "dest": "tools/bin/ffmpeg",
+      "chmod": "0755",
+      "platforms": {
+        "linux": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64",
+        "win32": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64.exe"
+      },
+      "directBinary": true,
+      "optional": true,
+      "notVendored": "~70MB binary with its own license. Fetched on request, never committed."
+    }
+  ],
+  "notes": [
+    "The server performs this restore, NOT the Python pipeline -- because the pipeline lives IN tools/, so it cannot rebuild the directory it was just deleted from.",
+    "Directories are created by the running server process, which is exactly why this exists: files copied into the container from outside end up owned by the wrong user and become read-only to the app."
+  ],
+  "pythonPackages": {
+    "purpose": "Pure-Python/wheel deps the texture tools need (analyze_texture_maps.py, normal_to_s.py). Installed with `pip install --target tools/pylibs`, which needs NO root and does NOT touch the system Python -- which matters in a container where the app can't write to site-packages and `--break-system-packages` is refused. The server puts this directory on PYTHONPATH when it runs the tools.",
+    "target": "tools/pylibs",
+    "packages": [
+      "numpy",
+      "pillow"
+    ],
+    "optional": true
+  }
+}

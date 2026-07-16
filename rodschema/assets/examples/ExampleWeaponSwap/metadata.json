@@ -1,0 +1,8 @@
+{
+    "name": "ExampleWeaponSwap",
+    "authors": [
+        "You"
+    ],
+    "description": "Gives the starting Shortsword (ItemName_WOS_1) the full stat block of Death's Salvation (ItemName_WOS_28): WeaponAttack, Grade, Class rank, ModNames, and the 21-tier enhancement curve.",
+    "version": "1.0.0"
+}

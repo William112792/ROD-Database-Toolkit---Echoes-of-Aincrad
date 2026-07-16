@@ -1,0 +1,8 @@
+{
+    "name": "NewItems",
+    "authors": [
+        "You"
+    ],
+    "description": "Adds X Juice (ItemName_Usable_1001) and Z Juice (ItemName_Usable_1002): new craftable/purchasable potions that reuse Healing Potion's item structure and X Healing Potion's existing 300 HP / 10s heal effect, unmodified.",
+    "version": "1.0.0"
+}

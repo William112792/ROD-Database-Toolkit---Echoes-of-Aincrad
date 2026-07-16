@@ -102,6 +102,7 @@ const WorldMapBrowserView = {
     panX: 0,
     panY: 0,
     selectedMarkerId: null,
+    selectedChestId: null, // chest pin selected on the area map (approximate ring pins)
     manualCache: {},     // { "mapType:areaKey": { entries, count, max } }
     addForm: { icon: "waypointPinCommon", x: "0.5", y: "0.5", label: "" },
     previewHidden: false,
@@ -116,7 +117,7 @@ const WorldMapBrowserView = {
         try {
           this.state.staticMaps = await fetchJSON(`${CONTENT_ROOT}/DataAssets/Database/WorldMap/StaticMaps.json`);
         } catch (e) {
-          this.state.staticMaps = { towns: [], dungeonFloors: [] };
+          this.state.staticMaps = { towns: [], dungeonFloors: [], dungeonMinimapModules: [] };
         }
         this.state.loaded = true;
       } catch (e) {
@@ -189,7 +190,19 @@ const WorldMapBrowserView = {
 
   // ---------- Field Map: overview ----------
   renderOverview(container) {
-    const floor = this.state.data.floor;
+    // Multi-world since the WL02 export landed: floorOverviews carries
+    // one entry per world that ships BOTH the floor texture and the
+    // widget (WL01: 8 piece overlays; WL02: the game's own widget has
+    // ZERO piece slots yet -- verified, so the floor image renders
+    // with that stated rather than fake highlights). Old builds only
+    // have .floor -- treated as a one-world list.
+    const overviews = (this.state.data.floorOverviews && this.state.data.floorOverviews.length)
+      ? this.state.data.floorOverviews
+      : (this.state.data.floor ? [this.state.data.floor] : []);
+    if (!this.state.overviewWorld || !overviews.find((f) => f.world === this.state.overviewWorld)) {
+      this.state.overviewWorld = overviews.length ? overviews[0].world : null;
+    }
+    const floor = overviews.find((f) => f.world === this.state.overviewWorld) || null;
     const areas = this.state.data.areas || [];
     const withTex = areas.filter((a) => a.hasTextures);
     const wrap = document.createElement("div");
@@ -197,13 +210,17 @@ const WorldMapBrowserView = {
       <div class="coverage-banner">
         <span><b>${areas.length}</b> areas in the map-piece registry</span>
         <span><b>${withTex.length}</b> with exported map textures</span>
-        <span><b>${(this.state.data.floor && this.state.data.floor.overlays.length) || 0}</b> floor overlays (game's own layout)</span>
+        <span><b>${floor ? floor.overlays.length : 0}</b> floor overlays (game's own layout${overviews.length > 1 ? `, ${escapeHtml(this.state.overviewWorld || "")}` : ""})</span>
         <span style="margin-left:auto; opacity:0.6;" title="Only some area families have their map textures exported so far — more appear here automatically as exports land, same as the asset sidecars.">textures appear as exported</span>
       </div>
       <div class="equip-layout two-col" style="--list-col: 300px;">
         <div id="mapAreaListPane" style="max-height:70vh; overflow-y:auto;"></div>
         <div class="hud-panel" style="padding:14px; text-align:center;">
-          <div style="font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:8px;">1st Floor — WL01 Overview</div>
+          <div style="font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:8px;">
+            Floor Overview
+            ${overviews.length > 1 ? overviews.map((f) => `<button class="toggle-btn ov-world-btn${f.world === this.state.overviewWorld ? " active" : ""}" data-ovworld="${escapeHtml(f.world)}" style="font-size:11px; margin-left:6px;">${escapeHtml(f.world)}</button>`).join("") : ` — ${escapeHtml(this.state.overviewWorld || "")}`}
+          </div>
+          ${floor && !floor.overlays.length ? `<div style="font-size:10.5px; color:var(--hud-sp); margin-bottom:6px;">The game's own ${escapeHtml(floor.world)} floor-map widget ships with no highlight pieces yet (verified in the WBP) — the floor image is shown as-is; areas open from the list on the left.</div>` : ""}
           <div id="mapFloorStage" style="position:relative; display:inline-block; max-width:100%;"></div>
           <div style="font-size:11px; color:var(--hud-text-dim); margin-top:8px;">
             The overview uses the game's own floor-map widget layout. Highlighted regions have
@@ -214,6 +231,10 @@ const WorldMapBrowserView = {
       </div>
     `;
     container.appendChild(wrap);
+    wrap.querySelectorAll(".ov-world-btn").forEach((b) => b.addEventListener("click", () => {
+      this.state.overviewWorld = b.dataset.ovworld;
+      this.renderModeBody();
+    }));
 
     const stage = document.getElementById("mapFloorStage");
     if (floor) {
@@ -223,8 +244,18 @@ const WorldMapBrowserView = {
       stage.style.height = `${sz}px`;
       stage.innerHTML = `<img src="${escapeHtml(floor.image)}" alt="Floor map" style="width:100%; height:100%; display:block; border:1px solid var(--hud-border); border-radius:8px;"/>`;
       for (const ov of floor.overlays) {
-        const left = (floor.size / 2 + ov.left) * scale;
-        const top = (floor.size / 2 + ov.top) * scale;
+        // UE canvas-slot semantics (see build_world_map): with the
+        // slots' Alignment (0.5, 0.5), Left/Top is where the overlay's
+        // CENTER sits relative to the canvas center -- so the top-left
+        // corner is Left/Top minus alignment*size. The old top-left
+        // interpretation shifted every piece down-right by half its
+        // own size (the reported "odd placement" on this overview).
+        // alignX/alignY default to 0.5 so a WorldMap.json built before
+        // the field existed still renders correctly.
+        const ax = ov.alignX != null ? ov.alignX : 0.5;
+        const ay = ov.alignY != null ? ov.alignY : 0.5;
+        const left = (floor.size / 2 + ov.left - ax * ov.width) * scale;
+        const top = (floor.size / 2 + ov.top - ay * ov.height) * scale;
         const area = this.areaForOverlay(ov.name);
         const el = document.createElement("img");
         el.src = ov.image;
@@ -503,10 +534,66 @@ const WorldMapBrowserView = {
     return this.state.data.icons || {};
   },
 
+  // Gimmick pins come from the runtime dump (GimmickDump Lua mod) --
+  // these coordinates exist in NO export, so they only appear once a
+  // sweep has captured them. Each kind gets its own colour and its own
+  // layer toggle, so a map thick with chests can still be read.
+  // Runtime-dump gimmicks -> the game's OWN map pins. Nearly every kind
+  // has a real one (seal, ark, door, side-quest trinket, town chest...),
+  // so the fallbacks are rare by design:
+  //   lore/tips     -> Waypoint Pin (Common), as the game itself has no
+  //                    dedicated lore icon.
+  //   anything else -> Waypoint Pin (Classic), a deliberate "we don't
+  //                    know the right pin yet" marker rather than a
+  //                    confident-looking wrong one.
+  // The two noisiest kinds (sequence_ctrl, accessible) are INTERNAL logic
+  // actors -- barriers, boss triggers, area controllers -- and there are
+  // 161 of them in a single sweep. They're captured and listed, but their
+  // layers start OFF so they can't bury the things a player cares about.
+  GIMMICK_VISUALS: {
+    chest:            { iconKey: "treasureChest",     label: "Treasure Chest" },
+    chest_town:       { iconKey: "townChest",         label: "Chest (town)" },
+    subquest_trinket: { iconKey: "sideQuestTrinket",  label: "Side Quest Trinket" },
+    seal:             { iconKey: "seal",              label: "Seal" },
+    sealed_ark:       { iconKey: "ark",               label: "Sealed Ark" },
+    ark:              { iconKey: "ark",               label: "Ark" },
+    lore_tip:         { iconKey: "waypointPinCommon", label: "Lore / Tip" },
+    gift_pillar:      { iconKey: "waypointPinCommon", label: "Gift Pillar" },
+    quest_terminal:   { iconKey: "searchTerminal",    label: "Quest Terminal" },
+    terminal:         { iconKey: "safeArea",          label: "Terminal" },
+    barrier:          { iconKey: "door",              label: "Barrier" },
+    gate_door:        { iconKey: "door",              label: "Gate Door" },
+    wall_door:        { iconKey: "door",              label: "Wall Door" },
+    dungeon_guide:    { iconKey: "dungeon",           label: "Dungeon Guide" },
+    map_pin:          { iconKey: "waypoint",          label: "Map Pin" },
+    signpost:         { iconKey: "waypoint",          label: "Signpost" },
+    breakable:        { iconKey: "waypointPinGimmick", label: "Breakable" },
+    interactive:      { iconKey: "waypointPinGimmick", label: "Interactive Gimmick" },
+    accessible:       { iconKey: "waypointPinGimmick", label: "Area Controller", defaultOff: true },
+    sequence_ctrl:    { iconKey: "waypointPinGimmick", label: "Sequence / Boss Trigger", defaultOff: true },
+  },
+
+  gimmickVisual(kind) {
+    const g = this.GIMMICK_VISUALS[kind];
+    // Unknown kind -> Waypoint Pin (Classic). Honest placeholder.
+    const iconKey = (g && g.iconKey) || "waypoint";
+    const meta = MAP_ICON_BY_KEY[iconKey] || { label: iconKey, fallback: "◆" };
+    return {
+      icon: this.icons()[iconKey],
+      fallback: meta.fallback || "◆",
+      color: "#fff",
+      label: (g && g.label) || kind,
+      layerKey: `gimmick_${kind}`,
+      defaultOff: Boolean(g && g.defaultOff),
+    };
+  },
+
+
   markerVisual(kind) {
     const icons = this.icons();
     if (kind === "WT") return { icon: icons.warpTerminal, fallback: "◆", color: "#fff", label: "Warp Terminal", layerKey: "warpTerminal" };
     if (kind === "SA") return { icon: icons.safeArea, fallback: "▲", color: "#fff", label: "Safe Area", layerKey: "safeArea" };
+    if (kind && kind !== "SA" && kind !== "WT") return this.gimmickVisual(kind);
     return { icon: null, fallback: "●", color: "var(--hud-text-dim)", label: "Marker", layerKey: null };
   },
 
@@ -580,9 +667,9 @@ const WorldMapBrowserView = {
 
     const notes = {
       safeArea: null, warpTerminal: null,
-      treasureChest: "No chest coordinates exist in the export for Field Map/World View — listed per area instead; here it's whatever's been added manually.",
+      treasureChest: "Approximate ring near the area gate — the EXPORT has no chest coordinates. Chests captured by the GimmickDump Lua mod get REAL coordinates and appear as their own 'Treasure Chest' layer instead.",
     };
-    return [...keys].map((key) => {
+    const rows = [...keys].map((key) => {
       const meta = MAP_ICON_BY_KEY[key] || { label: key, fallback: "◆" };
       let count = manualCountFor(key);
       if (key === "safeArea") count += autoCount("SA");
@@ -593,6 +680,24 @@ const WorldMapBrowserView = {
         note: notes[key] || null,
       };
     });
+
+    // One row per gimmick KIND actually captured for this area. Built
+    // from the markers present rather than a fixed list, so a kind you
+    // haven't swept yet doesn't sit in the legend as a permanent zero.
+    const gimmickKinds = [...new Set(autoMarkers.filter((m) => m.fromRuntimeDump).map((m) => m.kind))].sort();
+    for (const kind of gimmickKinds) {
+      const v = this.gimmickVisual(kind);
+      if (!(v.layerKey in this.state.layers)) this.state.layers[v.layerKey] = !v.defaultOff;
+      rows.push({
+        key: v.layerKey,
+        label: `${v.label} (${autoCount(kind)})`,
+        icon: v.icon,
+        fallback: v.fallback,
+        color: v.color,
+        note: "Captured at runtime by the GimmickDump Lua mod — real in-world coordinates. These exist in no export.",
+      });
+    }
+    return rows;
   },
 
   legendIconHtml(iconUrl, fallback, color) {
@@ -694,6 +799,91 @@ const WorldMapBrowserView = {
     if (this._sidePanelRenderer) this._sidePanelRenderer();
   },
 
+  // Chest pins for the single-area Field Map view. The export contains
+  // NO chest coordinates (verified when chests were first joined to
+  // areas), so these pins are explicitly APPROXIMATE: every chest in
+  // the area is fanned out in a ring around the area's own gate marker
+  // (the join key that attached it here in the first place), or the
+  // area's center when the gate has no coordinate. Each pin is
+  // clickable -> highlights that chest's resolved contents in the side
+  // panel. Honest-labeling rule applies: the tooltip and side panel
+  // both say the position is approximate, and the ring placement is
+  // visually distinct from real coordinate pins (dashed halo).
+  drawChestMarkers(stage, area, bounds, tpp) {
+    stage.querySelectorAll(".map-chest-marker").forEach((m) => m.remove());
+    if (!this.state.layers.treasureChest) return;
+    const chests = Array.isArray(area.chests)
+      ? area.chests
+      : (area.chestIds || []).map((cid) => ({ chestId: cid, contents: null }));
+    if (!chests.length) return;
+
+    const anchorMarker = (area.markers || []).find((m) => m.id === area.gateId)
+      || (area.markers || [])[0];
+    const ax = anchorMarker ? (anchorMarker.x - bounds.minX) / tpp : (bounds.maxX - bounds.minX) / (2 * tpp);
+    const ay = anchorMarker ? (anchorMarker.y - bounds.minY) / tpp : (bounds.maxY - bounds.minY) / (2 * tpp);
+
+    const st = this.iconVisual("treasureChest");
+    // Split real-coordinate chests (placed-actor exports -- solid pin
+    // at the true world position) from coordinate-less ones (dashed
+    // APPROXIMATE ring near the gate). Mixed areas render both.
+    const placed = chests.filter((c) => c.coordinates && c.coordinates.x != null);
+    const approx = chests.filter((c) => !(c.coordinates && c.coordinates.x != null));
+    placed.forEach((chest) => {
+      const x = (chest.coordinates.x - bounds.minX) / tpp;
+      const y = (chest.coordinates.y - bounds.minY) / tpp;
+      const selected = this.state.selectedChestId === chest.chestId;
+      const el = document.createElement("div");
+      el.className = "map-chest-marker";
+      const scale = 1 / Math.max(this.state.zoom, 0.4);
+      el.style.cssText = `position:absolute; left:${x}px; top:${y}px; transform:translate(-50%,-50%) scale(${scale}); cursor:pointer; z-index:6;`
+        + `border:1px solid rgba(255,213,74,${selected ? "1" : "0.7"}); border-radius:50%; padding:3px; background:rgba(0,0,0,0.35);`
+        + (selected ? "filter:drop-shadow(0 0 7px #FFD54A);" : "");
+      el.innerHTML = st.icon
+        ? `<img src="${st.icon}" alt="Treasure Chest" style="width:22px; height:22px; object-fit:contain;"/>`
+        : `<span style="color:#FFD54A; font-size:14px; text-shadow:0 0 6px rgba(0,0,0,0.9);">▣</span>`;
+      el.title = `${chest.chestId} — exact placed-actor position (${chest.coordinates.sourceFile || "level export"}). Click for contents.`;
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        this.state.selectedChestId = selected ? null : chest.chestId;
+        this._redrawSidePanel();
+        this.drawChestMarkers(stage, area, bounds, tpp);
+      });
+      stage.appendChild(el);
+    });
+
+    approx.forEach((chest, i) => {
+      // Ring layout: 10 pins per ring, radius stepping outward so
+      // chest-heavy areas stay readable instead of stacking.
+      const perRing = 10;
+      const ring = Math.floor(i / perRing);
+      const idxInRing = i % perRing;
+      const countInRing = Math.min(perRing, approx.length - ring * perRing);
+      const angle = (idxInRing / countInRing) * Math.PI * 2 - Math.PI / 2 + ring * 0.3;
+      const radius = 52 + ring * 26;
+      const x = ax + radius * Math.cos(angle);
+      const y = ay + radius * Math.sin(angle);
+      const selected = this.state.selectedChestId === chest.chestId;
+
+      const el = document.createElement("div");
+      el.className = "map-chest-marker";
+      const scale = 1 / Math.max(this.state.zoom, 0.4);
+      el.style.cssText = `position:absolute; left:${x}px; top:${y}px; transform:translate(-50%,-50%) scale(${scale}); cursor:pointer; z-index:5;`
+        + `border:1px dashed rgba(255,213,74,${selected ? "0.95" : "0.45"}); border-radius:50%; padding:3px;`
+        + (selected ? "filter:drop-shadow(0 0 7px #FFD54A);" : "");
+      el.innerHTML = st.icon
+        ? `<img src="${st.icon}" alt="Treasure Chest" style="width:22px; height:22px; object-fit:contain;"/>`
+        : `<span style="color:#FFD54A; font-size:14px; text-shadow:0 0 6px rgba(0,0,0,0.9);">▣</span>`;
+      el.title = `${chest.chestId} — position approximate (no chest coordinates exist in the export; pinned near the area gate). Click for contents.`;
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        this.state.selectedChestId = selected ? null : chest.chestId;
+        this._redrawSidePanel();
+        this.drawChestMarkers(stage, area, bounds, tpp);
+      });
+      stage.appendChild(el);
+    });
+  },
+
   markerDetailHtml(sel) {
     const gate = (DataStore.getAllGatesFlat ? DataStore.getAllGatesFlat() : []).find((g) => g.id === sel.id);
     const st = this.markerVisual(sel.kind);
@@ -710,6 +900,7 @@ const WorldMapBrowserView = {
   async renderAreaView(container) {
     const area = (this.state.data.areas || []).find((a) => a.gateId === this.state.areaGateId);
     if (!area || !area.bounds) { this.state.fieldSub = "overview"; return this.renderOverview(container); }
+    if (this._lastChestArea !== area.gateId) { this.state.selectedChestId = null; this._lastChestArea = area.gateId; }
     this.ensureLayers("field");
     const tpp = area.texturePerPixel;
     const gate = (DataStore.getAllGatesFlat ? DataStore.getAllGatesFlat() : []).find((g) => g.id === area.gateId);
@@ -726,6 +917,7 @@ const WorldMapBrowserView = {
     const stage = document.getElementById("mapStage");
     const redraw = () => {
       this.drawMarkers(stage, area.markers, area.bounds, tpp);
+      this.drawChestMarkers(stage, area, area.bounds, tpp);
       this.drawManualMarkers(stage, "field", area.gateId, wPx, hPx, onMarkerChange);
       this.updateMarkerPreview(stage, wPx, hPx);
     };
@@ -762,13 +954,19 @@ const WorldMapBrowserView = {
     const hasRichChests = Array.isArray(area.chests);
     const chestCount = hasRichChests ? area.chests.length : (area.chestIds || []).length;
     if (this.state.layers.treasureChest && chestCount) {
+      // Selected-on-map chest floats to the top with a highlight so a
+      // pin click always lands the eye on the right contents.
+      const orderedChests = hasRichChests
+        ? [...area.chests].sort((a, b) =>
+            (b.chestId === this.state.selectedChestId) - (a.chestId === this.state.selectedChestId))
+        : null;
       html += `
         <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:#FFD54A; margin-bottom:4px;">Treasure Chests here (${chestCount})</div>
-        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:6px;">Attached by the location join — no chest coordinates exist in the export, so these are a list, not pins. Full item stats in Items › Chests.</div>
+        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:6px;">Pinned on the map in a dashed ring near the area gate — positions are APPROXIMATE (no chest coordinates exist in the export; the location join is the only placement data there is). Click a pin to highlight its contents. Full item stats in Items › Chests.</div>
         ${!hasRichChests ? `<div style="font-size:10px; color:var(--hud-sp); margin-bottom:6px;">Contents unavailable — this instance's World Map data predates chest-contents support. Re-run the World focus build to see items here.</div>` : ""}
         <div style="max-height:280px; overflow-y:auto;">
           ${hasRichChests
-            ? area.chests.map((c) => this.renderChestContentsHtml(c)).join("")
+            ? orderedChests.map((c) => this.renderChestContentsHtml(c, c.chestId === this.state.selectedChestId)).join("")
             : area.chestIds.map((cid) => `<div style="font-family:var(--font-mono); font-size:11px; line-height:1.8; color:var(--hud-text);">▣ ${escapeHtml(cid)}</div>`).join("")}
         </div>
       `;
@@ -781,11 +979,11 @@ const WorldMapBrowserView = {
   // required a trip to Items > Chests to find out what's actually
   // inside, which defeated the point of surfacing chests on the map
   // in the first place.
-  renderChestContentsHtml(chest) {
+  renderChestContentsHtml(chest, highlighted = false) {
     const contents = chest.contents || [];
     return `
-      <div style="margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(135,200,210,0.1);">
-        <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--db-cyan-bright); margin-bottom:3px;">▣ ${escapeHtml(chest.chestId)}</div>
+      <div style="margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(135,200,210,0.1);${highlighted ? " background:rgba(255,213,74,0.07); border:1px dashed rgba(255,213,74,0.55); border-radius:4px; padding:6px;" : ""}">
+        <div style="font-family:var(--font-mono); font-size:10.5px; color:${highlighted ? "#FFD54A" : "var(--db-cyan-bright)"}; margin-bottom:3px;">▣ ${escapeHtml(chest.chestId)}${highlighted ? " · selected on map" : ""}</div>
         ${contents.length ? contents.map((slot) => {
           const name = DataStore.getChestItemName ? DataStore.getChestItemName(slot.itemKey) : slot.itemKey;
           const icon = DataStore.getItemIconPath ? DataStore.getItemIconPath(slot.itemKey) : null;
@@ -883,6 +1081,44 @@ const WorldMapBrowserView = {
     `;
   },
 
+  drawTownGimmicks(town, variant) {
+    const stageEl = document.getElementById("imgMarkerStage");
+    const imgEl = document.getElementById("imgMarkerImg");
+    if (!stageEl || !imgEl) return;
+    const markers = (town.markers || []).filter((m) => m.normalized && m.normalized[variant]);
+    if (!markers.length) return;
+
+    const draw = () => {
+      stageEl.querySelectorAll(".map-gimmick-marker").forEach((m) => m.remove());
+      const w = imgEl.clientWidth, h = imgEl.clientHeight;
+      if (!w || !h) return;
+      for (const m of markers) {
+        const v = this.gimmickVisual(m.kind);
+        if (v.layerKey && this.state.layers[v.layerKey] === false) continue;
+        const n = m.normalized[variant];
+        const el = document.createElement("div");
+        el.className = "map-gimmick-marker";
+        el.style.cssText = `position:absolute; left:${n.x * w}px; top:${n.y * h}px; transform:translate(-50%,-100%); z-index:6; pointer-events:auto;`;
+        el.innerHTML = v.icon
+          ? `<img src="${v.icon}" alt="${escapeHtml(v.label)}" style="width:24px; height:24px; object-fit:contain;"/>`
+          : `<span style="color:#FFD54A; font-size:17px; text-shadow:0 0 6px rgba(0,0,0,0.9);">${v.fallback}</span>`;
+        el.title = `${v.label} — ${m.id}${m.chunk ? ` (${m.chunk})` : ""} · captured at runtime`;
+        stageEl.appendChild(el);
+      }
+    };
+    if (imgEl.complete && imgEl.clientWidth) draw();
+    else imgEl.addEventListener("load", draw, { once: true });
+    // The image is responsive, so pin positions must follow it.
+    if (!this._townResizeBound) {
+      window.addEventListener("resize", () => {
+        const t = this.state.currentTown;
+        if (t) this.drawTownGimmicks(t.town, t.variant);
+      });
+      this._townResizeBound = true;
+    }
+    this.state.currentTown = { town, variant };
+  },
+
   async setupImageMarkerStage(mapType, areaKey) {
     this.ensureLayers(mapType);
     await this.loadManualMarkers(mapType, areaKey);
@@ -968,18 +1204,32 @@ const WorldMapBrowserView = {
     const mainImage = town.images.find((im) => im.variant === "full") || town.images[0];
     body.innerHTML = this.renderImageMarkerStage(mainImage.image, "town", town.townCode, `${town.townCode} map`);
     this.setupImageMarkerStage("town", town.townCode);
+    // Runtime-captured town gimmicks (town chests, lore tips, the
+    // Smithy/Item Seller, quest terminals). Town_XXX.json's MiniMapInfo
+    // gives a real world->texture transform, so the pipeline converts each
+    // to a normalized position for THIS image variant -- they're drawn on
+    // the same image stage the manual markers use.
+    this.drawTownGimmicks(town, mainImage.variant || "full");
   },
 
   // ---------- Dungeons: single reference image per floor + manual marker overlay ----------
   renderDungeonsView(container) {
     const floors = this.state.staticMaps.dungeonFloors || [];
+    // Post-release: per-family minimap BUILDING BLOCKS (Widget/
+    // Dungeonmap/{FAMILY}/T_Minimap_*) -- the tiles the game assembles
+    // procedurally at runtime. No assembled layout exists in the
+    // export (confirmed), so families render as a tile catalog, never
+    // a stitched fake floor plan.
+    const modFamilies = this.state.staticMaps.dungeonMinimapModules || [];
     if (!this.state.dungeonSuffix && floors.length) this.state.dungeonSuffix = floors[0].suffix;
     const floor = floors.find((f) => f.suffix === this.state.dungeonSuffix);
+    const family = modFamilies.find((f) => `fam:${f.family}` === this.state.dungeonSuffix);
     const wrap = document.createElement("div");
     wrap.innerHTML = `
       <div class="coverage-banner">
         <span><b>${floors.length}</b> dungeon floor image(s) exported</span>
-        <span style="margin-left:auto; opacity:0.6;" title="Floor suffixes (e.g. HTE1, NTR2) are NOT confirmed to map 1:1 onto a specific named dungeon in World > Dungeons — several dungeons share the same 3-letter prefix, so each floor is labeled honestly by its raw exported name rather than guessed. Markers here are entirely manual.">dungeon name attribution unconfirmed</span>
+        ${modFamilies.length ? `<span><b>${modFamilies.length}</b> minimap module families (<b>${modFamilies.reduce((n, f) => n + f.tileCount, 0)}</b> tiles)</span>` : ""}
+        <span style="margin-left:auto; opacity:0.6;" title="Floor suffixes (e.g. HTE1, NTR2) are NOT confirmed to map 1:1 onto a specific named dungeon in World > Dungeons — several dungeons share the same 3-letter prefix, so each floor is labeled honestly by its raw exported name rather than guessed. Markers here are entirely manual. Minimap modules are the game's procedural building blocks; no assembled layout exists in the export.">dungeon name attribution unconfirmed</span>
       </div>
       <div class="equip-layout two-col" style="--list-col: 220px;">
         <div id="dungeonListPane"></div>
@@ -992,11 +1242,41 @@ const WorldMapBrowserView = {
       <div class="weapon-list-row${f.suffix === this.state.dungeonSuffix ? " selected" : ""}" data-floor="${escapeHtml(f.suffix)}">
         <div style="flex:1; min-width:0;"><div class="wl-name">${escapeHtml(f.suffix)}</div><div class="wl-id">${escapeHtml(f.prefix)} · floor ${f.floorNumber}${f.isWayGraphic ? " · route graphic" : ""}</div></div>
       </div>
-    `).join("");
+    `).join("") + (modFamilies.length ? `
+      <div style="font-family:var(--font-display); font-size:10px; font-weight:600; color:var(--hud-text-dim); letter-spacing:0.08em; margin:10px 4px 4px;">MINIMAP MODULES</div>
+    ` + modFamilies.map((f) => `
+      <div class="weapon-list-row${`fam:${f.family}` === this.state.dungeonSuffix ? " selected" : ""}" data-floor="fam:${escapeHtml(f.family)}">
+        <div style="flex:1; min-width:0;"><div class="wl-name">${escapeHtml(f.family)}</div><div class="wl-id">${f.tileCount} tiles · procedural building blocks</div></div>
+      </div>
+    `).join("") : "");
     listPane.querySelectorAll("[data-floor]").forEach((row) => {
       row.addEventListener("click", () => { this.state.dungeonSuffix = row.dataset.floor; this.renderModeBody(); });
     });
     const body = document.getElementById("dungeonBody");
+    if (family) {
+      const groups = { background: [], chamber: [], module: [], other: [] };
+      family.tiles.forEach((t) => (groups[t.kind] || groups.other).push(t));
+      const section = (label, tiles, big) => tiles.length ? `
+        <div style="font-family:var(--font-display); font-size:11px; font-weight:600; color:var(--db-cyan-bright); margin:12px 0 6px;">${label} (${tiles.length})</div>
+        <div style="display:flex; flex-wrap:wrap; gap:10px;">
+          ${tiles.map((t) => `
+            <a href="${t.image}" target="_blank" title="${escapeHtml(t.file)}" style="text-decoration:none; text-align:center;">
+              <img src="${t.image}" alt="${escapeHtml(t.file)}" loading="lazy"
+                   style="width:${big ? 220 : 96}px; height:${big ? 220 : 96}px; object-fit:contain; background:rgba(64,207,216,0.05); border:1px solid rgba(64,207,216,0.18); border-radius:4px; image-rendering:pixelated;"/>
+              <div style="font-family:var(--font-mono); font-size:8.5px; color:var(--hud-text-dim); max-width:${big ? 220 : 96}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.file.replace(/^T_Minimap_/, "").replace(/\.png$/, ""))}</div>
+            </a>`).join("")}
+        </div>` : "";
+      body.innerHTML = `
+        <div class="hud-panel" style="padding:14px;">
+          <div style="font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--hud-text);">${escapeHtml(family.family)} minimap modules</div>
+          <div style="font-size:11px; color:var(--hud-text-dim); margin:4px 0 2px;">The game's own building blocks for this dungeon family's procedurally-assembled minimap — background, chamber tiles (boss/mid-boss rooms), and corridor/junction modules. No assembled layout exists in the export, so no floor plan is faked here.</div>
+          ${section("Background", groups.background, true)}
+          ${section("Chambers", groups.chamber, false)}
+          ${section("Corridor / junction modules", groups.module, false)}
+          ${section("Other tiles", groups.other, false)}
+        </div>`;
+      return;
+    }
     if (!floor) {
       body.innerHTML = `<div class="hud-panel"><div class="empty-state"><p>No dungeon floor maps exported yet.</p></div></div>`;
       return;

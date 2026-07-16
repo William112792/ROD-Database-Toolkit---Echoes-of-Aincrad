@@ -51,7 +51,7 @@ const SkeletonAssetsBrowserView = {
       <div class="coverage-banner">
         <span><b>${this.state.entries.length}</b> mesh assets</span>
         <span><b>${this.state.entries.filter((e) => e.kind === "SkeletalMesh").length}</b> skeletal / <b>${this.state.entries.filter((e) => e.kind === "StaticMesh").length}</b> static</span>
-        <span>downloads: <b>${sc.psk || 0}</b> psk · <b>${sc.pskx || 0}</b> pskx · <b>${sc.uemodel || 0}</b> uemodel · <b>${sc.blend || 0}</b> blend</span>
+        <span>downloads: ${["psk", "pskx", "uemodel", "blend", "fbx", "glb", "gltf"].map((x) => `<b>${sc[x] || 0}</b> ${x}`).join(" · ")}</span>
         <span style="margin-left:auto; opacity:0.6;" title="The JSONs are mesh metadata and references — UE doesn't export geometry to JSON. The sidecar binaries ARE the geometry.">JSON = metadata · sidecars = geometry</span>
       </div>
       <div class="toolbar" id="skelToolbar"></div>
@@ -176,10 +176,15 @@ const SkeletonAssetsBrowserView = {
           <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:4px;">Downloads</div>
           <div style="font-size:11px; color:var(--hud-text-dim); margin-bottom:8px;">
             The JSON is mesh <b>metadata</b> (UE doesn't export geometry to JSON); the binary
-            sidecars <b>are</b> the geometry. blend buttons appear here automatically once
-            .blend files are uploaded next to the JSONs.
+            sidecars <b>are</b> the geometry. Buttons appear here automatically for every
+            supported sidecar (psk/pskx/uemodel/blend/fbx/glb/gltf) uploaded next to the JSON
+            with the same stem. A .glb/.gltf additionally enables the in-app <b>View 3D</b>
+            button (export from Blender via File › Export › glTF 2.0, format glTF Binary).
           </div>
-          <div>${this.dlButton(e.jsonPath, `${e.name}.json`, "Mesh metadata JSON")}${sidecarBtns}${skelSidecarBtns}</div>
+          <div>${(e.sidecars.glb || e.sidecars.gltf) ? `<button class="toggle-btn" style="margin:2px 4px 2px 0; border-color:var(--db-cyan-bright); color:var(--db-cyan-bright);"
+              data-mv-url="/api/pipeline/download-file?path=${encodeURIComponent(e.sidecars.glb || e.sidecars.gltf)}"
+              data-mv-title="${escapeHtml(e.name)}" data-mv-sub="${escapeHtml(e.sidecars.glb || e.sidecars.gltf)}" data-mv-scale=""
+              onclick="ModelPanel.openFromBtn(this)" title="Open in the in-app 3D viewer">▶ View 3D</button>` : ""}${this.dlButton(e.jsonPath, `${e.name}.json`, "Mesh metadata JSON")}${sidecarBtns}${skelSidecarBtns}</div>
           ${!sidecarBtns && !skelSidecarBtns ? '<div style="font-size:11px; color:var(--hud-text-dim); margin-top:4px;">No binary sidecars exported for this asset yet — only the metadata JSON.</div>' : ""}
         </div>
 

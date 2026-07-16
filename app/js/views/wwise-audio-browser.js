@@ -95,6 +95,9 @@ const WwiseAudioView = {
     this.renderCategoryBar();
     this.renderList();
     this.renderDetail();
+    // Decoder availability decides whether Play is honest -- fetch it,
+    // then re-render the detail so the banner (if any) appears.
+    this.loadAudioStatus().then(() => this.renderDetail());
   },
 
   renderCategoryBar() {
@@ -183,25 +186,212 @@ const WwiseAudioView = {
     }
   },
 
+  /**
+   * .wem is Wwise Vorbis -- no browser plays it, and ffmpeg alone can't
+   * decode it. The server converts on demand IF vgmstream is installed.
+   * When it isn't, saying so precisely (with the fix) beats a play
+   * button that silently fails. Downloads work either way.
+   */
+  decoderBannerHtml() {
+    const st = this.audioStatus;
+    if (!st || st.canPreview) return "";
+    return `
+      <div class="mod-callout unresolved" style="margin-top:0; margin-bottom:12px;">
+        <div class="mod-name">Playback needs vgmstream — downloads work regardless</div>
+        <div class="mod-effect-line">${escapeHtml(st.installHint || "")}</div>
+      </div>`;
+  },
+
+  async loadAudioStatus() {
+    try {
+      const r = await fetch("/api/audio/status");
+      if ((r.headers.get("content-type") || "").includes("application/json")) {
+        this.audioStatus = await r.json();
+      }
+    } catch (e) { this.audioStatus = null; }
+  },
+
+  /**
+   * A real player: duration, play/pause, seek.
+   *
+   * The old version fetched the whole thing as a blob and set src to an
+   * object URL. A blob has no HTTP range support, so the browser can't
+   * seek and often won't report a duration until the entire file is in
+   * memory -- which is why "play" appeared to do nothing. Now the <audio>
+   * element points straight at /api/audio/preview, which serves 206
+   * partial content, so the browser streams and scrubs like any other
+   * audio URL.
+   */
+  fmtTime(sec) {
+    if (!isFinite(sec) || sec < 0) return "--:--";
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  },
+
+  wirePlayers(pane) {
+    // One shared <audio> element: a list of 30 VO lines all playing at once
+    // is not a feature, and 30 audio elements is 30 open connections.
+    if (!this._audio) {
+      this._audio = new Audio();
+      this._audio.preload = "none";
+    }
+    const audio = this._audio;
+
+    const rows = [...pane.querySelectorAll(".wwise-media")];
+    const resetOthers = (keep) => {
+      for (const r of rows) {
+        if (r === keep) continue;
+        r.querySelector(".wwise-play").textContent = "▶ Play";
+        r.querySelector(".wwise-seek").value = 0;
+        r.querySelector(".wwise-seek").disabled = true;
+        r.querySelector(".wwise-time").textContent = "--:-- / --:--";
+      }
+    };
+
+    for (const row of rows) {
+      const btn = row.querySelector(".wwise-play");
+      const seek = row.querySelector(".wwise-seek");
+      const time = row.querySelector(".wwise-time");
+      const msg = row.querySelector(".wwise-msg");
+      const url = `/api/audio/preview?path=${encodeURIComponent(row.dataset.path)}`;
+
+      btn.addEventListener("click", async () => {
+        // Same row, currently playing -> pause. This is the play/pause the
+        // old UI never had.
+        if (this._activeRow === row && !audio.paused) {
+          audio.pause();
+          btn.textContent = "▶ Play";
+          return;
+        }
+        // Same row, paused -> resume.
+        if (this._activeRow === row && audio.src) {
+          audio.play().catch(() => {});
+          btn.textContent = "⏸ Pause";
+          return;
+        }
+
+        resetOthers(row);
+        this._activeRow = row;
+        msg.textContent = "";
+        btn.textContent = "Decoding…";
+        btn.disabled = true;
+
+        // Ask for it first, so a decoder error becomes a MESSAGE rather
+        // than an <audio> element that silently refuses to play.
+        try {
+          const head = await fetch(url, { headers: { Range: "bytes=0-1" } });
+          if (!head.ok && head.status !== 206) {
+            const j = await head.json().catch(() => ({}));
+            msg.textContent = j.detail || j.error || `Failed (${head.status})`;
+            btn.textContent = "▶ Play";
+            btn.disabled = false;
+            return;
+          }
+        } catch (e) {
+          msg.textContent = e.message;
+          btn.textContent = "▶ Play";
+          btn.disabled = false;
+          return;
+        }
+
+        audio.src = url;
+        audio.currentTime = 0;
+        seek.disabled = false;
+        btn.disabled = false;
+        btn.textContent = "⏸ Pause";
+        audio.play().catch((e) => {
+          msg.textContent = "Playback blocked: " + e.message;
+          btn.textContent = "▶ Play";
+        });
+
+        audio.onloadedmetadata = () => {
+          time.textContent = `0:00 / ${this.fmtTime(audio.duration)}`;
+        };
+        audio.ontimeupdate = () => {
+          if (this._activeRow !== row) return;
+          time.textContent = `${this.fmtTime(audio.currentTime)} / ${this.fmtTime(audio.duration)}`;
+          if (isFinite(audio.duration) && audio.duration > 0 && !seek.dragging) {
+            seek.value = Math.round((audio.currentTime / audio.duration) * 1000);
+          }
+        };
+        audio.onended = () => {
+          if (this._activeRow !== row) return;
+          btn.textContent = "▶ Play";
+          seek.value = 0;
+        };
+        audio.onerror = () => {
+          if (this._activeRow !== row) return;
+          msg.textContent = "The browser could not play this file.";
+          btn.textContent = "▶ Play";
+        };
+      });
+
+      seek.addEventListener("input", () => { seek.dragging = true; });
+      seek.addEventListener("change", () => {
+        seek.dragging = false;
+        if (this._activeRow === row && isFinite(audio.duration)) {
+          audio.currentTime = (seek.value / 1000) * audio.duration;
+        }
+      });
+    }
+  },
+
   renderDetail() {
     const pane = document.getElementById("wwiseDetailPane");
     const ev = (this.state.events || []).find((e) => e.path === this.state.selectedPath);
 
     if (!ev) {
       pane.innerHTML = `<div class="hud-panel"><div class="empty-state"><p>Select an audio event.</p></div></div>`;
+    this.wirePlayers(pane);
       return;
     }
 
-    const languageBlocks = ev.languages.map((lang) => `
+    // Each media file gets a real player and a download. Files the
+    // export didn't include are shown as such rather than as dead
+    // buttons -- the event still lists them because the GAME references
+    // them; that's a fact about the game, not a gap to hide.
+    const languageBlocks = ev.languages.map((lang) => {
+      const media = lang.media || (lang.mediaPaths || []).map((p) => ({ id: p.split("/").pop().replace(".wem", ""), path: null }));
+      return `
       <div style="margin-top:10px;">
-        <div style="font-size:12px; font-weight:600; color:var(--db-cyan-bright);">${escapeHtml(lang.language || "(unspecified)")}</div>
-        ${lang.mediaPaths.length > 0 ? lang.mediaPaths.map((p) => `
-          <div style="font-family:var(--font-mono); font-size:11px; color:var(--hud-text-dim); padding:3px 0 3px 10px; border-left:2px solid rgba(255,255,255,0.1);">${escapeHtml(p)}</div>
-        `).join("") : `<div style="font-size:11px; color:var(--hud-text-dim); padding-left:10px;">No media file path found for this language.</div>`}
-      </div>
-    `).join("");
+        <div style="font-size:12px; font-weight:600; color:var(--db-cyan-bright);">
+          ${escapeHtml(lang.language || "(unspecified)")}
+          <span style="opacity:0.65; font-weight:400;">— ${lang.availableCount ?? 0}/${media.length} exported</span>
+        </div>
+        ${media.length ? media.map((m) => m.path ? `
+          <div class="wwise-media" data-path="${escapeHtml(m.path)}" style="padding:6px 0 6px 10px; border-left:2px solid rgba(64,207,216,0.35);">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button class="toggle-btn wwise-play" style="font-size:10px; padding:2px 10px; min-width:64px;">▶ Play</button>
+              <span class="wwise-time" style="font-family:var(--font-mono); font-size:10.5px; color:var(--hud-text-dim); min-width:86px;">--:-- / --:--</span>
+              <input type="range" class="wwise-seek" value="0" min="0" max="1000" step="1" disabled
+                     style="flex:1; min-width:120px; accent-color:var(--db-cyan-bright); height:4px;" />
+              <span style="font-family:var(--font-mono); font-size:10.5px; color:var(--hud-text-dim);">
+                ${escapeHtml(m.id)}${m.bytes ? ` · ${(m.bytes / 1024).toFixed(1)} KB` : ""}
+              </span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+              <span style="font-size:10px; color:var(--hud-text-dim);">Download:</span>
+              <a class="toggle-btn" style="font-size:10px; padding:1px 8px; text-decoration:none;"
+                 href="/api/audio/download?format=wem&path=${encodeURIComponent(m.path)}" download>.wem</a>
+              <a class="toggle-btn" style="font-size:10px; padding:1px 8px; text-decoration:none;"
+                 href="/api/audio/download?format=ogg&path=${encodeURIComponent(m.path)}" download>.ogg</a>
+              <a class="toggle-btn" style="font-size:10px; padding:1px 8px; text-decoration:none;"
+                 href="/api/audio/download?format=wav&path=${encodeURIComponent(m.path)}" download>.wav</a>
+              <span class="wwise-msg" style="font-size:10px; color:var(--rank-a);"></span>
+            </div>
+          </div>` : `
+          <div style="display:flex; align-items:center; gap:8px; padding:4px 0 4px 10px; border-left:2px solid rgba(255,255,255,0.08);">
+            <span style="font-family:var(--font-mono); font-size:10.5px; color:var(--hud-text-dim); opacity:0.75;">
+              ${escapeHtml(m.id)} — not in this export
+            </span>
+          </div>`).join("")
+        : `<div style="font-size:11px; color:var(--hud-text-dim); padding-left:10px;">No media file path found for this language.</div>`}
+      </div>`;
+    }).join("");
 
     pane.innerHTML = `
+      ${this.decoderBannerHtml()}
       <div class="hud-panel">
         <h3 style="font-family:var(--font-mono); font-size:15px;">${escapeHtml(ev.name)}</h3>
         <div style="font-family:var(--font-mono); font-size:12px; color:var(--hud-text-dim); line-height:1.8; margin-top:8px;">

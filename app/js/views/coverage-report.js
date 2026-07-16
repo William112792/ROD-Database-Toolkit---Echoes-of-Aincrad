@@ -24,7 +24,7 @@ const CoverageReportView = {
           official UE string-table export (<code>Game.json</code>, one
           per language under <code>Localization/Game/{lang}/</code>) —
           this is ground truth, not an inferred match, and covers all
-          13 languages the game ships. It superseded an earlier
+          15 languages the game ships (en-AU and ja-JP arrived with the first post-release export; discovery is dynamic, so future drops appear automatically). It superseded an earlier
           weapon-only <code>weapon_names_{lang}.json</code> source
           (kept as a fallback) and, before that, a rank+ATK signature
           matching approach against <code>EOA-SAO-Weapons-Updated.xlsx</code>
@@ -60,7 +60,7 @@ const CoverageReportView = {
           (<code>ST_DatabaseLocalizeList</code> — a DIFFERENT string table than items/mods use,
           confirmed by inspecting the source directly). Coverage here is much lower than
           items: only 27 of 120 rows have any localization at all in this export, across every
-          one of the 13 languages — the other 93 are real rows (a genuine EnemyType + numeric
+          one of the 15 languages — the other 93 are real rows (a genuine EnemyType + numeric
           ID) with no matching name string anywhere. There's no way to tell from this data alone
           whether that's unreleased content, cut monsters, or simply not yet localized.
         </p>
@@ -430,7 +430,7 @@ const CoverageReportView = {
           exists anywhere, and <code>DT_InitPopAreaTable_WL01/WL02</code> exist but both have
           ZERO rows. The authoritative registry is the official localization itself: the 176
           <code>AreaTitle_*</code> keys in <code>Game.json</code>, confirmed to be an IDENTICAL
-          key set in all 13 languages before being treated as canonical. 82 of the 176 titles
+          key set in every shipped language before being treated as canonical. 82 of the 176 titles
           are <code>{Rep_DungeonName_*}</code> templates (e.g. "Ancient Ritual Hall: Spirit Gate"),
           resolved per-language with the same rule Recipes/Lore/Towns/Quests already use.
         </p>
@@ -499,7 +499,7 @@ const CoverageReportView = {
         <h3>Dungeon &amp; Gate Coverage</h3>
         <p style="font-size:13px; color:var(--hud-text-dim); margin-top:0;">
           <b>Dungeons</b> share Areas' registry situation: no data-table list file exists — the
-          17 <code>DungeonName_*</code> keys (identical set in all 13 languages, verified) ARE
+          17 <code>DungeonName_*</code> keys (identical set in every shipped language, verified) ARE
           the list, across 5 families matching the <code>DNG/</code> folder codes
           (ERU/HFO/HTE/MGK/NTR). Per dungeon the data DOES carry: a gate chain parsed from the
           <code>{WT|SA}_{code}_F{n}{s|e}</code> ID pattern (${(DataStore.dungeonIndex && DataStore.dungeonIndex.withGates) || 0}/17
@@ -709,7 +709,7 @@ const CoverageReportView = {
           have a portrait thumbnail anywhere in either export.
         </p>
         <p style="font-size:13px; color:var(--hud-text-dim); margin: 10px 0 0;">
-          <b>Weapon + skills (added once a later export included this data):</b> all 7 partners
+          <b>Weapon + skills (added once a later export included this data):</b> all discovered partners (7 pre-release; 21+ post-release with 25 stat tables — the set is data-derived now)
           have a confirmed weapon category and a specific equipped weapon, resolved to its real
           name via the same weapon localization weapons/armor already use, from
           <code>DT_PartnerList.json</code>. Only 3 of the 7 (Argo/Iori/Wyzeman) have a named
@@ -1143,6 +1143,34 @@ const CoverageReportView = {
         BudgetTrackerModal.show();
       });
     }
+    const sdkBtn = wrap.querySelector("#downloadSdkBtn");
+    if (sdkBtn) {
+      sdkBtn.addEventListener("click", async () => {
+        const original = sdkBtn.textContent;
+        sdkBtn.textContent = "Generating…";
+        sdkBtn.disabled = true;
+        try {
+          const r = await fetch("/api/sdk/ue-project-zip");
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}));
+            alert(j.error || `SDK download failed (${r.status}). Upload a Dumper-7 dump on the Build Dashboard and run the Game SDK section first.`);
+            return;
+          }
+          const blob = await r.blob();
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "RODGameSDK.zip";
+          a.click();
+          URL.revokeObjectURL(a.href);
+        } catch (e) {
+          alert(`SDK download failed: ${e.message}`);
+        } finally {
+          sdkBtn.textContent = original;
+          sdkBtn.disabled = false;
+        }
+      });
+    }
+
     const openAiSkillBtn = wrap.querySelector("#openAiSkillBtn");
     if (openAiSkillBtn) {
       openAiSkillBtn.addEventListener("click", () => {
@@ -1445,6 +1473,7 @@ const CoverageReportView = {
           <button class="toggle-btn" id="reopenDisclaimerBtn">View Disclaimer</button>
           <button class="toggle-btn" id="openBudgetTrackerBtn">Budget Tracker</button>
           <button class="toggle-btn" id="openAiSkillBtn">AI Skill</button>
+          <button class="toggle-btn" id="downloadSdkBtn" title="UE 5.3.2-ready C++ module generated from the game's own Dumper-7 dump: UENUM/USTRUCT/UCLASS for every DataTable row struct and DataAsset class, plus the .usmap mappings and install instructions.">Game SDK</button>
         </div>
       </div>
     `;

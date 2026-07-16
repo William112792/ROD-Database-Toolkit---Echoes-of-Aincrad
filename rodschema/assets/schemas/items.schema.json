@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RODSchema New Items Schema (v1.5 -- requires the 'add new entry' loader capability, not yet built as of this file)",
+  "description": "Keys are the NEW ItemKey you're creating (e.g. ItemName_Usable_1001). Every field needed to make the item exist, be craftable, be purchasable, and display correctly lives in one entry -- duplicate the whole block, change the key/ID/DisplayName, and you get another independent item (see ItemName_Usable_1002 in the example).",
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "required": ["NewItem", "Category", "CopyItemFrom", "DisplayName"],
+    "properties": {
+      "NewItem": {
+        "const": true,
+        "description": "Must be true. Distinguishes this from the existing weapons.schema.json format, which only EDITS items that already exist -- this format ADDS a brand-new TMap entry instead. The loader needs to allocate a new map slot via reflection (UE4SS FScriptMapHelper::AddPair or equivalent), not just look up an existing one."
+      },
+      "Category": {
+        "type": "string",
+        "enum": ["Usable", "Material", "Heal", "Key", "Sphere", "Col", "OneHandedSword", "Rapier", "Dagger", "Mace", "TwoHandedSword", "Axe", "Upper", "Glove", "Lower", "Shield"],
+        "description": "Which *ItemDataAsMap on RODItemDataAsset this new entry gets added to. 'Usable' = UseItemDataAsMap (potions/consumables -- confirmed real category for Healing Potion etc)."
+      },
+      "CopyItemFrom": {
+        "type": "string",
+        "description": "REQUIRED. An existing, real ItemKey in the SAME Category whose struct becomes the starting point for every field not explicitly overridden below (RarelityID, CanConsumption, CanShareable, ModelID, MaxStack, CanFormulation, CanTraining, DropGimmick, and any field this schema doesn't expose yet). This is what makes 'X Juice' inherit Healing Potion's general shape rather than needing every single field spelled out by hand."
+      },
+      "GameplayEffectsFrom": {
+        "type": "string",
+        "description": "An existing ItemKey (any tier, doesn't have to match CopyItemFrom) whose GameplayEffects soft-object reference gets reused UNMODIFIED -- i.e. this new item points at the SAME existing UseItem_U_XXXXX/GameplayEffect asset as that item, rather than creating a new one. This is intentional and safe: it's a many-to-one reference, not a copy, so the original item's effect is untouched. Confirmed necessary because GameplayEffect magnitudes are compiled Blueprint logic (often a CustomCalculationClass, e.g. RODMMC_Attribute) that cannot be authored or recalculated by a runtime JSON patcher -- only reused as-is. If omitted, defaults to the same value as CopyItemFrom."
+      },
+      "ItemActionFrom": {
+        "type": "string",
+        "description": "An existing ItemKey whose eat/use animation + in-hand item mesh (RODItemActionDataAsset, e.g. ItemAction_F001001) gets reused for this new item. ASSUMPTION NOT YET CONFIRMED: we've only verified the ItemAction linkage for one Foods-category example (F001001); the exact ItemAction key an existing Usable-category potion (like ItemName_Usable_34) actually uses hasn't been independently traced yet. If omitted, defaults to the same value as CopyItemFrom."
+      },
+      "DisplayName": {
+        "type": "string",
+        "description": "The actual in-game item name, e.g. 'X Juice'. Written into a NEW localization key ItemName_<ThisItemKey's category+number> -- confirmed real format via Game.locres export (ST_GeneralLocalizeList namespace, keys like ItemName_Usable_1)."
+      },
+      "Description": {
+        "type": "string",
+        "description": "In-game description tooltip text. Written into a new ItemDescription_<key> localization entry alongside DisplayName."
+      },
+      "BuyAmount": {
+        "type": "integer",
+        "minimum": -1,
+        "description": "Shop price. -1 means not sellable to the item's BuyAmount slot (matches vanilla convention seen on non-purchasable items)."
+      },
+      "SellAmount": {
+        "type": "integer",
+        "minimum": -1
+      },
+      "CanBuyAndSell": {
+        "type": "boolean",
+        "description": "Confirmed real field -- must be true for BuyAmount/SellAmount to actually apply in shop UI."
+      },
+      "Recipe": {
+        "type": "object",
+        "description": "Optional. If present, adds a new entry to UsableRecipeDataAsMap (or the matching *RecipeDataAsMap for the item's Category) so this item becomes craftable. Omit entirely if the item shouldn't be craftable.",
+        "properties": {
+          "Col": {
+            "type": "integer",
+            "description": "Crafting cost/currency, confirmed real field on recipe structs."
+          },
+          "RecipeItems": {
+            "type": "array",
+            "description": "Required materials. Confirmed real struct shape: {Category, ItemId, Num} per ingredient.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "Category": { "type": "string" },
+                "ItemId": { "type": "integer" },
+                "Num": { "type": "integer", "minimum": 1 }
+              },
+              "required": ["Category", "ItemId", "Num"]
+            }
+          }
+        }
+      },
+      "Shop": {
+        "type": "object",
+        "description": "Optional. If present, appends {Category, ItemId} for this new item into DT_ShopItemList's ShopList[ShopId].Items array -- a real UDataTable, NOT the RODItemDataAsset, so this needs a separate object-lookup (StaticFindObject on the DataTable) even though the same generic reflection patch technique applies once found. Omit entirely if the item shouldn't be purchasable anywhere.",
+        "properties": {
+          "ShopId": {
+            "type": "integer",
+            "description": "Confirmed real key format: DT_ShopItemList's Rows['Shop'].ShopList is keyed by a plain integer shop ID (1 = the one general-goods shop confirmed in the export so far; other shop IDs not yet catalogued)."
+          }
+        }
+      }
+    },
+    "additionalProperties": false
+  }
+}

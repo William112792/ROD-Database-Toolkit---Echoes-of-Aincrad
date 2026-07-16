@@ -1,0 +1,9 @@
+[submodule "deps/RE-UE4SS"]
+	path = deps/RE-UE4SS
+	url = https://github.com/UE4SS-RE/RE-UE4SS.git
+[submodule "deps/json"]
+	path = deps/json
+	url = https://github.com/nlohmann/json.git
+[submodule "deps/safetyhook"]
+	path = deps/safetyhook
+	url = https://github.com/cursey/safetyhook.git

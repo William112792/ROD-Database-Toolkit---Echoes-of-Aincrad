@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ROD Database — Echoes of Aincrad Reverse-Engineering Toolkit</title>
-<link rel="stylesheet" href="app/css/theme.css" />
+<link rel="stylesheet" href="app/css/theme.css?v=20260712" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -116,6 +116,9 @@
         <li class="nav-item" data-route="dt-inspector" title="DT Inspector"><span class="nav-icon">▤</span><span class="nav-label">DT Inspector</span></li>
         <li class="nav-item" data-route="bp-inspector" title="BP Inspector"><span class="nav-icon">⌘</span><span class="nav-label">BP Inspector</span></li>
         <li class="nav-item" data-route="asset-inspector" title="Asset Inspector"><span class="nav-icon">◈</span><span class="nav-label">Asset Inspector</span></li>
+        <li class="nav-item" data-route="materials" title="Materials"><span class="nav-icon">◐</span><span class="nav-label">Materials</span></li>
+        <li class="nav-item" data-route="rodschema" title="RODSchema"><span class="nav-icon">⛭</span><span class="nav-label">RODSchema</span></li>
+        <li class="nav-item" data-route="lua-scripting" title="Lua Scripting"><span class="nav-icon">𝓛</span><span class="nav-label">Lua Scripting</span></li>
         <li class="nav-item" data-route="wwise-audio" title="Wwise Audio"><span class="nav-icon">♪</span><span class="nav-label">Wwise Audio</span></li>
         <li class="nav-item" data-route="modding-guides" title="Modding Guides (write and browse Markdown guides with screenshots)"><span class="nav-icon">📓</span><span class="nav-label">Modding Guides</span></li>
         <li class="nav-item" data-route="coverage" title="Data Coverage"><span class="nav-icon">✓</span><span class="nav-label">Data Coverage</span></li>
@@ -149,46 +152,64 @@
   </div>
 </div>
 
-<script src="app/js/data-loader.js"></script>
-<script src="app/js/item-sources-panel.js"></script>
-<script src="app/js/disclaimer-modal.js"></script>
-<script src="app/js/budget-tracker-modal.js"></script>
-<script src="app/js/ai-skill-modal.js"></script>
-<script src="app/js/animation-settings.js"></script>
-<script src="app/js/background-fx.js"></script>
-<script src="app/js/loading-skeleton.js"></script>
-<script src="app/js/acv-engine.js"></script>
-<script src="app/js/views/weapons-browser.js"></script>
-<script src="app/js/views/equipment-browser.js"></script>
-<script src="app/js/views/sword-skills-browser.js"></script>
-<script src="app/js/views/monsters-browser.js"></script>
-<script src="app/js/views/items-browser.js"></script>
-<script src="app/js/views/lore-browser.js"></script>
-<script src="app/js/views/world-map-browser.js"></script>
-<script src="app/js/views/towns-browser.js"></script>
-<script src="app/js/views/quests-browser.js"></script>
-<script src="app/js/views/areas-browser.js"></script>
-<script src="app/js/views/dungeons-browser.js"></script>
-<script src="app/js/views/gates-browser.js"></script>
-<script src="app/js/views/monster-spawns-browser.js"></script>
-<script src="app/js/views/monster-drops-browser.js"></script>
-<script src="app/js/views/monster-stats-browser.js"></script>
-<script src="app/js/views/npcs-browser.js"></script>
-<script src="app/js/views/active-skills-browser.js"></script>
-<script src="app/js/views/ailments-browser.js"></script>
-<script src="app/js/views/shops-browser.js"></script>
-<script src="app/js/views/chests-browser.js"></script>
-<script src="app/js/views/modding-guides-browser.js"></script>
-<script src="app/js/views/characters-browser.js"></script>
-<script src="app/js/views/json-inspector.js"></script>
-<script src="app/js/views/dt-inspector.js"></script>
-<script src="app/js/views/bp-inspector.js"></script>
-<script src="app/js/views/skeleton-assets-browser.js"></script>
-<script src="app/js/views/animation-assets-browser.js"></script>
-<script src="app/js/views/asset-inspector.js"></script>
-<script src="app/js/views/coverage-report.js"></script>
-<script src="app/js/views/build-dashboard.js"></script>
-<script src="app/js/views/wwise-audio-browser.js"></script>
-<script src="app/js/main.js"></script>
+<!-- three.js for the in-app 3D model viewer (vendored from npm into
+     app/vendor -- fully offline, same as every other dependency). The
+     import map keeps the addons' bare "three" imports working without
+     a bundler; model-viewer.js is the app's ONE module script and
+     exposes window.ModelViewer for the plain-script views. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "./app/vendor/three/three.module.min.js",
+    "three/addons/": "./app/vendor/three/addons/"
+  }
+}
+</script>
+<script type="module" src="app/js/model-viewer.js?v=20260712"></script>
+
+<script src="app/js/data-loader.js?v=20260712"></script>
+<script src="app/js/item-sources-panel.js?v=20260712"></script>
+<script src="app/js/disclaimer-modal.js?v=20260712"></script>
+<script src="app/js/budget-tracker-modal.js?v=20260712"></script>
+<script src="app/js/ai-skill-modal.js?v=20260712"></script>
+<script src="app/js/animation-settings.js?v=20260712"></script>
+<script src="app/js/background-fx.js?v=20260712"></script>
+<script src="app/js/loading-skeleton.js?v=20260712"></script>
+<script src="app/js/acv-engine.js?v=20260712"></script>
+<script src="app/js/views/weapons-browser.js?v=20260712"></script>
+<script src="app/js/views/equipment-browser.js?v=20260712"></script>
+<script src="app/js/views/sword-skills-browser.js?v=20260712"></script>
+<script src="app/js/views/monsters-browser.js?v=20260712"></script>
+<script src="app/js/views/items-browser.js?v=20260712"></script>
+<script src="app/js/views/lore-browser.js?v=20260712"></script>
+<script src="app/js/views/world-map-browser.js?v=20260712"></script>
+<script src="app/js/views/towns-browser.js?v=20260712"></script>
+<script src="app/js/views/quests-browser.js?v=20260712"></script>
+<script src="app/js/views/areas-browser.js?v=20260712"></script>
+<script src="app/js/views/dungeons-browser.js?v=20260712"></script>
+<script src="app/js/views/gates-browser.js?v=20260712"></script>
+<script src="app/js/views/monster-spawns-browser.js?v=20260712"></script>
+<script src="app/js/views/monster-drops-browser.js?v=20260712"></script>
+<script src="app/js/views/monster-stats-browser.js?v=20260712"></script>
+<script src="app/js/views/npcs-browser.js?v=20260712"></script>
+<script src="app/js/views/active-skills-browser.js?v=20260712"></script>
+<script src="app/js/views/ailments-browser.js?v=20260712"></script>
+<script src="app/js/views/shops-browser.js?v=20260712"></script>
+<script src="app/js/views/chests-browser.js?v=20260712"></script>
+<script src="app/js/views/modding-guides-browser.js?v=20260712"></script>
+<script src="app/js/views/characters-browser.js?v=20260712"></script>
+<script src="app/js/views/json-inspector.js?v=20260712"></script>
+<script src="app/js/views/dt-inspector.js?v=20260712"></script>
+<script src="app/js/views/bp-inspector.js?v=20260712"></script>
+<script src="app/js/views/skeleton-assets-browser.js?v=20260712"></script>
+<script src="app/js/views/animation-assets-browser.js?v=20260712"></script>
+<script src="app/js/views/asset-inspector.js?v=20260712"></script>
+<script src="app/js/views/materials-browser.js?v=20260712"></script>
+<script src="app/js/views/rodschema-view.js?v=20260712"></script>
+<script src="app/js/views/lua-scripting.js?v=20260712"></script>
+<script src="app/js/views/coverage-report.js?v=20260712"></script>
+<script src="app/js/views/build-dashboard.js?v=20260712"></script>
+<script src="app/js/views/wwise-audio-browser.js?v=20260712"></script>
+<script src="app/js/main.js?v=20260712"></script>
 </body>
 </html>

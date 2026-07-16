@@ -2052,3 +2052,30 @@ body.scan-bar-disabled .scan-bar { display: none; }
 }
 .guide-editor:focus { border-color: rgba(64,207,216,0.5); box-shadow: 0 0 0 1px rgba(64,207,216,0.25); }
 .guide-editor.drop-target { border-color: var(--db-cyan-bright); box-shadow: 0 0 12px rgba(64,207,216,0.3) inset; }
+
+/* ============================================================
+   Numeric ID chips (list rows)
+   ------------------------------------------------------------
+   The raw ItemIds/recipe keys DataTables, shops and RODSchema patches
+   reference. These are SIBLINGS of .wl-id, never children: .wl-id is
+   deliberately `overflow:hidden; text-overflow:ellipsis` so long paths
+   truncate instead of widening the row -- which also silently CLIPPED
+   anything appended inside it (the reason the IDs were invisible in
+   Catalog/Materials on their first outing). flex-shrink:0 here because
+   a 4-character chip is never the thing that should give way.
+   ============================================================ */
+.weapon-list-row .id-chip {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid rgba(64, 207, 216, 0.35);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 16px;
+  color: var(--db-cyan-bright);
+  white-space: nowrap;
+}
+.weapon-list-row .id-chip-buy {
+  border-color: rgba(255, 213, 74, 0.45);
+  color: #FFD54A;
+}

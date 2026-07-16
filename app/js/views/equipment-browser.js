@@ -16,6 +16,39 @@
 const INFERRED_TWO_HANDED_CATEGORIES = ["TwoHandedSword", "Mace", "Axe"];
 
 const EquipmentBrowserView = {
+  /**
+   * Costume Feature colors. ECostumeKind in the game's SDK has exactly
+   * three values -- Upper=0, Gloves=1, Lower=2 -- which is why only
+   * those three armor categories show a palette (shields and other
+   * slots have no costume colouring, and pretending otherwise would be
+   * an invention). DT_CostumeColorList is ONE shared palette of 50: no
+   * field scopes a color to a kind or to an individual piece, so the
+   * same swatches are shown for each of the three, stated plainly.
+   */
+  COSTUME_KINDS: { Upper: "Upper", Gloves: "Gloves", Glove: "Gloves", Lower: "Lower" },
+
+  costumeColorsHtml(armor) {
+    const kind = this.COSTUME_KINDS[armor.category];
+    const colors = DataStore.costumeColors || [];
+    if (!kind || !colors.length) return "";
+    return `
+      <div class="hud-panel" style="width:100%; text-align:left; margin-top:12px; padding:12px 14px;">
+        <div style="font-family:var(--font-display); font-size:12px; font-weight:600; color:var(--db-cyan-bright); margin-bottom:3px;">
+          COSTUME FEATURE COLORS — ${escapeHtml(kind)} <span style="opacity:0.6; font-weight:400;">(${colors.length})</span>
+        </div>
+        <div style="font-size:10.5px; color:var(--hud-text-dim); margin-bottom:7px;">
+          The palette the in-game Costume Feature offers once unlocked. <b>One shared palette</b> —
+          DT_CostumeColorList scopes no color to a kind or to an individual piece, so these same ${colors.length}
+          apply to Upper, Gloves and Lower alike (ECostumeKind has exactly those three values).
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:4px;">
+          ${colors.map((c) => `
+            <div title="ID ${c.id} · #${escapeHtml(c.hex || "")} · row ${escapeHtml(c.rowKey)}"
+                 style="width:22px; height:22px; border-radius:3px; border:1px solid rgba(255,255,255,0.18); background:#${escapeHtml(c.hex || "888888")};"></div>`).join("")}
+        </div>
+      </div>`;
+  },
+
   state: {
     activeCategory: "Upper",
     selectedItemKey: null,
@@ -258,6 +291,7 @@ const EquipmentBrowserView = {
       ${armor.def !== null ? `<span class="pill" style="background:rgba(94,235,109,0.12); color:var(--hud-hp);">DEF ${armor.def}</span>` : ""}
       ${!verified ? '<span class="pill unverified">unverified</span>' : ""}
       <span class="wl-id">${armor.itemKey}</span>
+      ${armor.id != null ? `<span class="id-chip" title="Numeric ItemId — the value DataTables, shops and RODSchema patches reference">#${armor.id}</span>` : ""}
     `;
     row.addEventListener("click", () => {
       this.state.selectedItemKey = armor.itemKey;
@@ -306,6 +340,8 @@ const EquipmentBrowserView = {
 
         ${this.renderShieldCompatNote(armor)}
         ${this.renderModCalloutForArmor(armor)}
+        ${ModelPanel.html(DataStore.getModelRef("armor", armor.itemKey), DataStore.getArmorDisplayName ? DataStore.getArmorDisplayName(armor) : armor.itemKey)}
+        ${this.costumeColorsHtml(armor)}
         ${renderItemSourcesPanelHtml(armor.itemKey)}
       </div>
     `;
